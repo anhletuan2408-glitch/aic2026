@@ -8,8 +8,9 @@ CLIP image vectors with exact FAISS inner-product search, then diversifies resul
 
 ```powershell
 cd E:\AIC2026
-.\.venv\Scripts\python.exe web_app_vi.py --index-dir E:\AIC2026\index --zip-dir E:\
+powershell -ExecutionPolicy Bypass -File .\run_ui_vi.ps1
 ```
 
-Open http://127.0.0.1:7860. The model downloads once on first use.
+Open http://127.0.0.1:7860. Pass `-Device cuda` when CUDA is available.
+The launcher reuses the model cache inside `.venv\model-cache`.
 
