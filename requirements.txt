@@ -1,0 +1,5 @@
+faiss-cpu>=1.8,<2
+numpy>=1.26,<3
+open_clip_torch>=2.26,<4
+torch>=2.3,<3
+torchvision>=0.18,<1
