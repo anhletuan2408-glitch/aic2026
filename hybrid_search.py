@@ -14,6 +14,7 @@ class HybridConfig:
     rrf_k: int = 60
     object_weight: float = 0.45
     metadata_weight: float = 0.18
+    temporal_weight: float = 0.20
     object_labels: int = 12
     object_candidates: int = 2500
 
@@ -84,6 +85,7 @@ def reciprocal_rank_fusion(
     video_by_id: dict[int, str],
     metadata_ranks: dict[str, int],
     config: HybridConfig,
+    temporal_ids: list[int] | None = None,
 ) -> tuple[list[int], np.ndarray]:
     scores: dict[int, float] = {}
     for rank, global_id in enumerate(base_ids, start=1):
@@ -92,6 +94,11 @@ def reciprocal_rank_fusion(
         scores[global_id] = scores.get(global_id, 0.0) + config.object_weight / (
             config.rrf_k + rank
         )
+    for rank, global_id in enumerate(temporal_ids or [], start=1):
+        scores[global_id] = scores.get(global_id, 0.0) + config.temporal_weight / (
+            config.rrf_k + rank
+        )
+
     for global_id in list(scores):
         video_rank = metadata_ranks.get(video_by_id.get(global_id, ""))
         if video_rank is not None:

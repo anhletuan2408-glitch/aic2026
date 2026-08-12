@@ -12,6 +12,9 @@ from hybrid_search import HybridConfig, HybridSignals, reciprocal_rank_fusion
 from rerank import (
     RerankConfig, SIGLIP2_BASE_MODEL, SIGLIP2_MODEL, Siglip2Reranker
 )
+from retrieval_enhancements import (
+    expand_query, fuse_query_rankings,
+)
 from search import choose_device, load_metadata
 from search_kis import select_candidates
 from submission import MAX_ANSWERS
@@ -21,7 +24,8 @@ MODEL_NAME = "sentence-transformers/clip-ViT-B-32-multilingual-v1"
 
 class MultilingualFaissEngine:
     def __init__(self, index_dir: Path, device: str = "auto",
-                 hybrid_dir: Path | None = None, reranker: object | None = None) -> None:
+                 hybrid_dir: Path | None = None, reranker: object | None = None,
+                 query_ensemble: bool = False) -> None:
         self.device = choose_device(device)
         self.model_name = MODEL_NAME
         self.index = faiss.read_index(str(index_dir / "keyframes.faiss"))
@@ -36,6 +40,7 @@ class MultilingualFaissEngine:
         )
         self.hybrid_config = HybridConfig()
         self.reranker = reranker
+        self.query_ensemble = query_ensemble
 
     def encode(self, query: str) -> np.ndarray:
         query = query.strip()
@@ -45,15 +50,29 @@ class MultilingualFaissEngine:
             vector = self.model.encode([query], normalize_embeddings=True, convert_to_numpy=True)
         return np.ascontiguousarray(vector, dtype=np.float32)
 
+    def encode_many(self, queries: list[str]) -> np.ndarray:
+        with self._model_lock:
+            vectors = self.model.encode(
+                queries, normalize_embeddings=True, convert_to_numpy=True
+            )
+        return np.ascontiguousarray(vectors, dtype=np.float32)
+
     def search(self, query: str, top_k: int, candidate_k: int = 5000,
-               per_video: int = 3, min_time_gap: float = 2.0) -> list[dict[str, object]]:
+               per_video: int = 3, min_time_gap: float = 2.0,
+               quality: bool = True) -> list[dict[str, object]]:
         if top_k < 1 or top_k > MAX_ANSWERS:
             raise ValueError(f"top_k must be in [1, {MAX_ANSWERS}]")
-        vector = self.encode(query)
+        query = query.strip()
+        if not query:
+            raise ValueError("Query must not be empty")
+        variants = expand_query(query) if self.query_ensemble else [query]
+        vectors = self.encode_many(variants)
         candidate_k = min(max(candidate_k, top_k), self.index.ntotal)
-        scores, ids = self.index.search(vector, candidate_k)
-        ranked_ids = [int(value) for value in ids[0] if value >= 0]
-        ranked_scores = scores[0]
+        _, ids = self.index.search(vectors, candidate_k)
+        rankings = [[int(value) for value in row if value >= 0] for row in ids]
+        ranked_ids, ranked_scores = fuse_query_rankings(
+            rankings, limit=candidate_k
+        )
         top_labels: list[str] = []
         if self.hybrid is not None:
             text_vector = self.hybrid.encode(query)
@@ -74,21 +93,22 @@ class MultilingualFaissEngine:
             metadata = load_metadata(self.metadata_path, ranked_ids)
         selection_size = (
             max(top_k, self.reranker.config.pool_size)
-            if self.reranker else top_k
+            if self.reranker and quality else top_k
         )
         selected = select_candidates(
             ranked_ids, ranked_scores, metadata, selection_size, per_video, min_time_gap
         )
         for row in selected:
             row["matched_objects"] = top_labels
-        if self.reranker is not None:
+        if self.reranker is not None and quality:
             selected = self.reranker.rerank(query, selected)
         return selected[:top_k]
 
 def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
                device: str = "auto", engine: object | None = None,
                keyframes: object | None = None, rerank: bool = True,
-               reranker_model: str = SIGLIP2_MODEL) -> Flask:
+               reranker_model: str = SIGLIP2_MODEL,
+               query_ensemble: bool = False) -> Flask:
     app = Flask(__name__)
     keyframe_store = keyframes or KeyframeStore(zip_dir or Path("."))
     if engine is None:
@@ -104,7 +124,8 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
             if rerank else None
         )
         search_engine = MultilingualFaissEngine(
-            index_dir or Path("index"), resolved_device, reranker=reranker
+            index_dir or Path("index"), resolved_device, reranker=reranker,
+            query_ensemble=query_ensemble
         )
     else:
         search_engine = engine
@@ -125,6 +146,7 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
             "videos": int(getattr(keyframe_store, "video_count", 0)),
             "index": "FAISS IndexFlatIP", "language": "Vietnamese",
             "hybrid": getattr(search_engine, "hybrid", None) is not None,
+            "query_ensemble": getattr(search_engine, "query_ensemble", False),
             "reranker": (
                 getattr(search_engine.reranker, "model_name", SIGLIP2_MODEL)
                 if getattr(search_engine, "reranker", None) else None
@@ -135,13 +157,20 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
         payload = request.get_json(force=True)
         started = time.perf_counter()
         query = str(payload.get("query", ""))
+        use_quality = (
+            bool(payload.get("quality", True))
+            and getattr(search_engine, "reranker", None) is not None
+        )
         results = search_engine.search(query, int(payload.get("top_k", 50)),
             int(payload.get("candidate_k", 5000)), int(payload.get("per_video", 3)),
-            float(payload.get("min_time_gap", 2.0)))
+            float(payload.get("min_time_gap", 2.0)), use_quality)
         return jsonify({"query": query, "count": len(results),
             "elapsed_ms": round((time.perf_counter() - started) * 1000),
+            "mode": "quality" if use_quality else "fast",
             "planner": (
-                "multilingual-clip + objects + metadata -> rrf -> diversify"
+                (("query ensemble + " if getattr(search_engine, "query_ensemble", False) else "")
+                 + "clip + objects + metadata -> rrf"
+                 + (" -> siglip2" if use_quality else ""))
                 if getattr(search_engine, "hybrid", None) is not None
                 else "multilingual-clip -> faiss -> diversify"
             ), "results": results})
@@ -164,6 +193,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--no-rerank", action="store_true")
+    parser.add_argument("--query-ensemble", action="store_true")
     parser.add_argument(
         "--reranker-model", choices=[SIGLIP2_BASE_MODEL, SIGLIP2_MODEL],
         default=SIGLIP2_MODEL
@@ -171,7 +201,7 @@ def main() -> None:
     args = parser.parse_args()
     create_app(
         args.index_dir, args.zip_dir, args.device, rerank=not args.no_rerank,
-        reranker_model=args.reranker_model
+        reranker_model=args.reranker_model, query_ensemble=args.query_ensemble
     ).run(
         host=args.host, port=args.port, debug=False, threaded=True
     )

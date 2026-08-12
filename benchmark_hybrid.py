@@ -11,6 +11,9 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from hybrid_search import HybridConfig, HybridSignals, reciprocal_rank_fusion
+from retrieval_enhancements import (
+    expand_query, fuse_query_rankings, temporal_neighbor_ranking,
+)
 from web_app_vi import MODEL_NAME
 
 THRESHOLDS = (1, 5, 20, 50, 100)
@@ -73,12 +76,32 @@ def main():
     index = faiss.read_index(str(args.index_dir / "keyframes.faiss"))
     _, base_ids = index.search(query_vectors, min(args.candidate_k, index.ntotal))
     base_ranks = first_video_ranks(base_ids, video_by_frame, targets)
+    expanded = [expand_query(query) for query in queries]
+    flat_queries = [variant for variants in expanded for variant in variants]
+    flat_vectors = visual_model.encode(
+        flat_queries, batch_size=64, normalize_embeddings=True, convert_to_numpy=True
+    ).astype(np.float32)
+    _, flat_ids = index.search(flat_vectors, min(args.candidate_k, index.ntotal))
+    ensemble_rankings = []
+    offset = 0
+    for variants in expanded:
+        count = len(variants)
+        ranking, _ = fuse_query_rankings([
+            [int(value) for value in row if value >= 0]
+            for row in flat_ids[offset : offset + count]
+        ], limit=args.candidate_k)
+        ensemble_rankings.append(ranking)
+        offset += count
 
     signals = HybridSignals(args.index_dir / "hybrid", device="cpu")
     text_vectors = signals.encode_many(queries)
     config = HybridConfig()
     hybrid_rankings = []
-    for query_vector, ids in zip(text_vectors, base_ids):
+    ensemble_only_rankings = []
+    temporal_only_rankings = []
+    enhanced_rankings = []
+    video_map = {index: str(video) for index, video in enumerate(video_by_frame)}
+    for query_vector, ids, ensemble in zip(text_vectors, base_ids, ensemble_rankings):
         base = [int(value) for value in ids if value >= 0]
         objects, _ = signals.object_ranking(query_vector, config)
         union = set(base) | set(objects)
@@ -87,12 +110,45 @@ def main():
             base, objects, videos, signals.metadata_video_ranks(query_vector), config
         )
         hybrid_rankings.append(fused)
+        ensemble_only, _ = reciprocal_rank_fusion(
+            ensemble, objects, video_map,
+            signals.metadata_video_ranks(query_vector), config,
+        )
+        ensemble_only_rankings.append(ensemble_only)
+        base_temporal = temporal_neighbor_ranking(
+            base, video_map, len(video_by_frame)
+        )
+        temporal_only, _ = reciprocal_rank_fusion(
+            base, objects, video_map,
+            signals.metadata_video_ranks(query_vector), config,
+            temporal_ids=base_temporal,
+        )
+        temporal_only_rankings.append(temporal_only)
+        temporal = temporal_neighbor_ranking(
+            ensemble, video_map, len(video_by_frame)
+        )
+        enhanced, _ = reciprocal_rank_fusion(
+            ensemble, objects, video_map,
+            signals.metadata_video_ranks(query_vector), config,
+            temporal_ids=temporal,
+        )
+        enhanced_rankings.append(enhanced)
     hybrid_ranks = first_video_ranks(hybrid_rankings, video_by_frame, targets)
+    ensemble_only_ranks = first_video_ranks(
+        ensemble_only_rankings, video_by_frame, targets
+    )
+    temporal_only_ranks = first_video_ranks(
+        temporal_only_rankings, video_by_frame, targets
+    )
+    enhanced_ranks = first_video_ranks(enhanced_rankings, video_by_frame, targets)
     report = {
         "kind": "metadata-title proxy; not organizer accuracy",
         "queries": len(queries),
         "baseline": recall(base_ranks),
         "hybrid": recall(hybrid_ranks),
+        "hybrid_ensemble": recall(ensemble_only_ranks),
+        "hybrid_temporal": recall(temporal_only_ranks),
+        "hybrid_enhanced": recall(enhanced_ranks),
         "seconds": round(time.perf_counter() - started, 3),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

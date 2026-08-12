@@ -17,4 +17,9 @@ The launcher reuses the model cache inside `.venv\model-cache`.
 - `fast`: hybrid retrieval only, lowest latency.
 - `balanced`: rerank 120 candidates with SigLIP2 Base-224.
 - `quality` (default): rerank 300 candidates with SigLIP2 Large-384; measured peak was about 2.70 GB VRAM on this machine.
+For live competition, launch the server in `quality` mode so the reranker is
+loaded, then choose per query in the web UI:
+
+- `Nhanh` (UI default): interactive exploration without SigLIP2 latency.
+- `Chất lượng`: rerank 300 candidates before selecting/exporting answers.
 

@@ -112,5 +112,6 @@ Score one ranked CSV:
   outputs\query_001_submission.csv ground_truth\query_001.json
 ```
 
-The local Q&A scorer uses normalized accepted aliases. The organizer's semantic
-answer grader remains authoritative.
+The official-mode local Q&A scorer uses exact answer matching against the accepted
+ground-truth strings. See [SUBMISSION_GUIDE.md](SUBMISSION_GUIDE.md) and run
+`package_submission.py` before using a Codabench attempt.

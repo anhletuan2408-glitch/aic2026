@@ -85,6 +85,18 @@ def qa_r_score(
     )
 
 
+def qa_exact_r_score(
+    answer: QAAnswer,
+    ground_truth_video: str,
+    ground_truth_range: FrameRange,
+    ground_truth_answer: str,
+) -> float:
+    return float(
+        answer.video_id == ground_truth_video
+        and ground_truth_range.contains(answer.frame_id)
+        and answer.answer == ground_truth_answer
+    )
+
 def trake_r_score(
     answer: TRAKEAnswer,
     ground_truth_video: str,
@@ -129,3 +141,35 @@ def write_kis_submission(path: Path, answers: Sequence[KISAnswer]) -> None:
             if answer.frame_id < 0:
                 raise ValueError("frame_id must be non-negative")
             writer.writerow([answer.video_id, answer.frame_id])
+
+def write_qa_submission(path: Path, answers: Sequence[QAAnswer]) -> None:
+    validate_answers(answers)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.writer(stream)
+        for answer in answers:
+            validate_video_id(answer.video_id)
+            if answer.frame_id < 0:
+                raise ValueError("frame_id must be non-negative")
+            if not answer.answer or len(answer.answer) > 100:
+                raise ValueError("Q&A answer must contain 1-100 characters")
+            writer.writerow([answer.video_id, answer.frame_id, answer.answer])
+
+
+def write_trake_submission(path: Path, answers: Sequence[TRAKEAnswer]) -> None:
+    validate_answers(answers)
+    event_count = len(answers[0].frame_ids)
+    if event_count < 2:
+        raise ValueError("TRAKE answers must contain at least two events")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.writer(stream)
+        for answer in answers:
+            validate_video_id(answer.video_id)
+            if len(answer.frame_ids) != event_count:
+                raise ValueError("Every TRAKE answer must have the same event count")
+            if any(frame < 0 for frame in answer.frame_ids):
+                raise ValueError("TRAKE frame IDs must be non-negative")
+            if any(a >= b for a, b in zip(answer.frame_ids, answer.frame_ids[1:])):
+                raise ValueError("TRAKE frame IDs must be strictly increasing")
+            writer.writerow([answer.video_id, *answer.frame_ids])

@@ -17,3 +17,12 @@ python evaluate_retrieval.py validation\queries.jsonl --mode quality
 ```
 
 Keep the `round` field so batch 1, batch 2, and batch 3 can be reported separately.
+Append one independently verified example without editing JSON by hand:
+
+```powershell
+python validation\append_query.py validation\queries.jsonl --query-id manual_001 --query "xe máy đi qua cầu" --video-id L21_V001 --start 500 --end 650 --round practice-b1
+```
+
+The evaluation report includes combined metrics, metrics grouped by `round`, and
+a `misses` list for error analysis. Do not select ground truth only from the
+current model's top results; inspect the source video independently to avoid bias.

@@ -10,7 +10,10 @@ from submission import (
     final_score,
     kis_r_score,
     qa_r_score,
+    qa_exact_r_score,
     trake_r_score,
+    write_qa_submission,
+    write_trake_submission,
 )
 
 
@@ -35,6 +38,37 @@ class SubmissionScoringTests(unittest.TestCase):
             ["màu xanh", "blue"],
         )
         self.assertEqual(score, 1.0)
+    def test_qna_exact_matches_official_description(self) -> None:
+        answer = QAAnswer("L05_V005", 888, "Màu xanh")
+        self.assertEqual(
+            qa_exact_r_score(answer, "L05_V005", FrameRange(800, 900), "Màu xanh"),
+            1.0,
+        )
+        self.assertEqual(
+            qa_exact_r_score(answer, "L05_V005", FrameRange(800, 900), "màu xanh"),
+            0.0,
+        )
+
+    def test_qa_and_trake_writers_have_no_header(self) -> None:
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            qa_path = Path(directory) / "q.csv"
+            trake_path = Path(directory) / "t.csv"
+            write_qa_submission(
+                qa_path, [QAAnswer("L05_V005", 888, "Ba người, gồm hai nam")]
+            )
+            write_trake_submission(
+                trake_path, [TRAKEAnswer("L10_V010", (100, 200, 300))]
+            )
+            self.assertEqual(
+                qa_path.read_text(encoding="utf-8").strip(),
+                'L05_V005,888,"Ba người, gồm hai nam"',
+            )
+            self.assertEqual(
+                trake_path.read_text(encoding="utf-8").strip(),
+                "L10_V010,100,200,300",
+            )
 
     def test_trake_example_scores_three_of_four(self) -> None:
         ranges = [

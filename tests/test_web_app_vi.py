@@ -3,11 +3,11 @@ import unittest
 from web_app_vi import MODEL_NAME, create_app
 
 class FakeEngine:
-    model_name=MODEL_NAME; device="cpu"; index=SimpleNamespace(ntotal=177321)
+    model_name=MODEL_NAME; device="cpu"; index=SimpleNamespace(ntotal=177321); reranker=object()
     def __init__(self): self.queries=[]
-    def search(self,query,top_k,candidate_k,per_video,min_time_gap):
+    def search(self,query,top_k,candidate_k,per_video,min_time_gap,quality=True):
         if not query.strip(): raise ValueError("Query must not be empty")
-        self.queries.append(query)
+        self.queries.append((query,quality))
         return [{"video_id":"L21_V001","keyframe_no":12,"frame_idx":345,"score":0.42,"pts_time":11.5}]
 
 class FakeFrames:
@@ -34,7 +34,12 @@ class WebAppVietnameseTests(unittest.TestCase):
             response=self.client.post("/api/search",json={"query":query,"top_k":50})
             self.assertEqual(response.status_code,200)
             self.assertEqual(response.get_json()["query"],query)
-        self.assertEqual(self.engine.queries,queries)
+        self.assertEqual(self.engine.queries,[(query,True) for query in queries])
+    def test_fast_mode_is_forwarded(self):
+        response=self.client.post("/api/search",json={"query":"xe máy","quality":False})
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.get_json()["mode"],"fast")
+        self.assertEqual(self.engine.queries[-1],("xe máy",False))
 
     def test_empty_query_and_keyframe(self):
         self.assertEqual(self.client.post("/api/search",json={"query":" "}).status_code,400)

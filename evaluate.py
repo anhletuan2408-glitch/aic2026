@@ -12,7 +12,7 @@ from submission import (
     TRAKEAnswer,
     final_score,
     kis_r_score,
-    qa_r_score,
+    qa_exact_r_score,
     trake_r_score,
     validate_answers,
     validate_video_id,
@@ -65,7 +65,10 @@ def evaluate_qna(rows: list[list[str]], truth: dict[str, object]) -> list[float]
             raise ValueError("Q&A rows must be: <video_id>,<frame_id>,<answer>")
         answer = QAAnswer(row[0], int(row[1]), row[2])
         validate_video_id(answer.video_id)
-        scores.append(qa_r_score(answer, video_id, frame_range, accepted_answers))
+        scores.append(max(
+            qa_exact_r_score(answer, video_id, frame_range, accepted)
+            for accepted in accepted_answers
+        ))
     return scores
 
 

@@ -1,6 +1,6 @@
 import unittest
 
-from evaluate_retrieval import aggregate, score_ranking
+from evaluate_retrieval import aggregate, aggregate_by_round, score_ranking
 
 
 class RetrievalEvaluationTests(unittest.TestCase):
@@ -23,3 +23,11 @@ class RetrievalEvaluationTests(unittest.TestCase):
                "r@50": 1.0, "r@100": 1.0, "final_score": 1.0}
         zero = {key: 0.0 for key in one}
         self.assertEqual(aggregate([one, zero])["final_score"], 0.5)
+    def test_aggregate_by_round(self):
+        one = {"round": "r1", "r@1": 1.0, "r@5": 1.0, "r@20": 1.0,
+               "r@50": 1.0, "r@100": 1.0, "final_score": 1.0}
+        zero = {"round": "r2", "r@1": 0.0, "r@5": 0.0, "r@20": 0.0,
+                "r@50": 0.0, "r@100": 0.0, "final_score": 0.0}
+        metrics = aggregate_by_round([one, zero])
+        self.assertEqual(metrics["r1"]["final_score"], 1.0)
+        self.assertEqual(metrics["r2"]["r@100"], 0.0)

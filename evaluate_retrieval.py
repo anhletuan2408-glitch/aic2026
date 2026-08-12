@@ -55,6 +55,18 @@ def aggregate(scored: list[dict[str, float]]) -> dict[str, float]:
     keys = [f"r@{k}" for k in TOP_THRESHOLDS] + ["final_score"]
     return {key: sum(row[key] for row in scored) / len(scored) for key in keys}
 
+def aggregate_by_round(
+    details: list[dict[str, object]],
+) -> dict[str, dict[str, float]]:
+    keys = [f"r@{k}" for k in TOP_THRESHOLDS] + ["final_score"]
+    grouped: dict[str, list[dict[str, float]]] = {}
+    for row in details:
+        round_name = str(row.get("round", "unassigned"))
+        grouped.setdefault(round_name, []).append(
+            {key: float(row[key]) for key in keys}
+        )
+    return {round_name: aggregate(rows) for round_name, rows in grouped.items()}
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate AIC retrieval modes on KIS truth")
@@ -79,11 +91,29 @@ def main() -> None:
     details = []
     for record in records:
         rows = engine.search(str(record["query"]), 100, 5000, 3, 2.0)
-        details.append({"query_id": record["query_id"], **score_ranking(rows, record)})
+        details.append({
+            "query_id": record["query_id"],
+            "query": record["query"],
+            "round": record.get("round", "unassigned"),
+            "truth_video_id": record["video_id"],
+            "truth_start": record["start"],
+            "truth_end": record["end"],
+            **score_ranking(rows, record),
+        })
     report = {
         "mode": args.mode,
         "queries": len(records),
         "metrics": aggregate(details),
+        "rounds": aggregate_by_round(details),
+        "misses": [
+            {
+                "query_id": row["query_id"],
+                "query": row["query"],
+                "round": row["round"],
+                "truth_video_id": row["truth_video_id"],
+            }
+            for row in details if row["first_relevant_rank"] == 0.0
+        ],
         "seconds": round(time.perf_counter() - started, 3),
         "details": details,
     }
