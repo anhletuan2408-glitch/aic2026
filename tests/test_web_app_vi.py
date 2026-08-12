@@ -45,6 +45,10 @@ class WebAppVietnameseTests(unittest.TestCase):
         response=self.client.post("/api/assistant",json={"task":"kis","query":"xe máy","top_k":1,"quality":False})
         self.assertEqual(response.status_code,200)
         self.assertEqual((response.get_json()["task"],response.get_json()["count"]),("kis",1))
+    def test_qa_answer_route_requires_selection(self):
+        response=self.client.post("/api/qa/answer",json={"question":"Màu gì?","selections":[]})
+        self.assertEqual(response.status_code,400)
+        self.assertIn("Select between",response.get_json()["error"])
     def test_empty_query_and_keyframe(self):
         self.assertEqual(self.client.post("/api/search",json={"query":" "}).status_code,400)
         response=self.client.get("/keyframe/L21_V001/12.jpg")

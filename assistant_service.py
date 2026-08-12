@@ -8,13 +8,13 @@ from typing import Any
 import torch
 from sentence_transformers import SentenceTransformer
 
-from qna_search import QwenVLAnswerer, answer_rows
+from qna_search import QwenVLAnswerer, context_images
 from rerank import Siglip2Reranker
 from trake_search import search_trake, split_events
 
 
 class AssistantService:
-    """Route preliminary tasks while allowing one GPU workload at a time."""
+    """Route retrieval and answer selected Q&A frames with one GPU workload."""
 
     def __init__(self, engine: Any, keyframes: Any) -> None:
         self.engine = engine
@@ -33,27 +33,48 @@ class AssistantService:
             started = time.perf_counter()
             try:
                 if task == "kis":
-                    results = self._kis(query, options)
-                elif task == "trake":
+                    results = self._retrieve(query, options, bool(options.get("quality", True)))
+                elif task == "qa":
+                    results = self._retrieve(query, options, False)
+                else:
                     results = [{"video_id": a.video_id, "frame_ids": list(a.frame_ids)}
                                for a in search_trake(self.engine, split_events(query))]
-                else:
-                    results = self._qa(query, int(options.get("vlm_candidates", 6)))
-                return {"task": task, "query": query, "count": len(results),
+                return {"task": task, "phase": "retrieval", "query": query,
+                        "count": len(results),
                         "elapsed_ms": round((time.perf_counter()-started)*1000),
                         "results": results}
             finally:
                 self.status = "ready"
 
-    def _kis(self, query: str, options: dict[str, Any]) -> list[dict[str, Any]]:
+    def _retrieve(self, query: str, options: dict[str, Any], quality: bool) -> list[dict[str, Any]]:
         return self.engine.search(query, int(options.get("top_k", 50)),
             int(options.get("candidate_k", 5000)), int(options.get("per_video", 3)),
-            float(options.get("min_time_gap", 2.0)), bool(options.get("quality", True)))
+            float(options.get("min_time_gap", 2.0)), quality)
 
-    def _qa(self, question: str, candidates: int) -> list[dict[str, Any]]:
-        if candidates < 1 or candidates > 20:
-            raise ValueError("vlm_candidates must be in [1, 20]")
-        rows = self.engine.search(question, 100, 5000, 3, 2.0, False)
+    def answer_selected(self, question: str,
+                        selections: list[dict[str, Any]]) -> dict[str, Any]:
+        question = question.strip()
+        if not question:
+            raise ValueError("Question must not be empty")
+        if not selections or len(selections) > 20:
+            raise ValueError("Select between 1 and 20 frames")
+        required = {"video_id", "frame_idx", "keyframe_no"}
+        if any(not required.issubset(item) for item in selections):
+            raise ValueError("Every selection needs video_id, frame_idx, and keyframe_no")
+        with self.lock:
+            self.status = "busy"
+            started = time.perf_counter()
+            try:
+                results = self._answer_selected_locked(question, selections)
+                return {"task": "qa", "phase": "answered", "query": question,
+                        "count": len(results),
+                        "elapsed_ms": round((time.perf_counter()-started)*1000),
+                        "results": results}
+            finally:
+                self.status = "ready"
+
+    def _answer_selected_locked(self, question: str,
+                                selections: list[dict[str, Any]]) -> list[dict[str, Any]]:
         reranker = getattr(self.engine, "reranker", None)
         spec = ((reranker.model_name, reranker.config, reranker.keyframes)
                 if reranker is not None else None)
@@ -64,12 +85,24 @@ class AssistantService:
         answerer = None
         try:
             answerer = QwenVLAnswerer(device)
-            answers = answer_rows(rows, self.keyframes, answerer, question, candidates)
-            keyframes = {(str(r["video_id"]), int(r["frame_idx"])): int(r["keyframe_no"])
-                         for r in rows}
-            return [{"video_id": a.video_id, "frame_idx": a.frame_id,
-                     "keyframe_no": keyframes.get((a.video_id, a.frame_id)),
-                     "answer": a.answer} for a in answers]
+            results = []
+            for selected in selections:
+                video_id = str(selected["video_id"])
+                frame_idx = int(selected["frame_idx"])
+                keyframe_no = int(selected["keyframe_no"])
+                images = context_images(self.keyframes, video_id, keyframe_no)
+                if not images:
+                    continue
+                try:
+                    answer = answerer.answer(question, images)
+                finally:
+                    for image in images:
+                        image.close()
+                results.append({"video_id": video_id, "frame_idx": frame_idx,
+                                "keyframe_no": keyframe_no, "answer": answer})
+            if not results:
+                raise RuntimeError("Qwen-VL produced no answers for selected frames")
+            return results
         finally:
             if answerer is not None:
                 del answerer

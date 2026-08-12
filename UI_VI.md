@@ -27,7 +27,7 @@ loaded, then choose per query in the web UI:
 ## Three preliminary tasks
 
 - Textual KIS: hybrid FAISS retrieval with optional SigLIP2 reranking.
-- Visual Q&A: retrieves 100 frames, swaps retrieval models out of GPU memory, answers with Qwen2.5-VL-3B-Instruct NF4, then restores retrieval.
+- Visual Q&A: retrieves candidate frames first. The user selects 1-20 frames, then Qwen2.5-VL-3B-Instruct NF4 answers each selected frame separately before CSV export.
 - TRAKE: splits ordered events and aligns increasing frames within one video.
 
-The task selector controls the CSV schema automatically. Q&A model swapping is serialized and may take roughly 1-2 minutes on a 4 GB RTX 3050 Ti. Use 3 candidates for speed, 6 by default, or 12 for a broader answer consensus.
+The task tabs control the CSV schema automatically. Q&A CSV rows are created only after the user selects frames and runs Qwen. Model swapping is serialized and may take roughly 1-2 minutes on a 4 GB RTX 3050 Ti.

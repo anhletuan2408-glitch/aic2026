@@ -192,6 +192,15 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
                      and getattr(search_engine, "reranker", None) is not None),
             vlm_candidates=int(payload.get("vlm_candidates", 6)),
         ))
+    @app.post("/api/qa/answer")
+    def api_qa_answer() -> Response:
+        payload = request.get_json(force=True)
+        selections = payload.get("selections", [])
+        if not isinstance(selections, list):
+            raise ValueError("selections must be a list")
+        return jsonify(assistant.answer_selected(
+            str(payload.get("question", "")), selections
+        ))
     @app.get("/keyframe/<video_id>/<int:keyframe_no>.jpg")
     def keyframe(video_id: str, keyframe_no: int) -> Response:
         try:
