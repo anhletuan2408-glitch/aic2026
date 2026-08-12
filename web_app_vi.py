@@ -197,6 +197,7 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
             quality=(bool(payload.get("quality", True))
                      and getattr(search_engine, "reranker", None) is not None),
             vlm_candidates=int(payload.get("vlm_candidates", 6)),
+            qa_candidates=int(payload.get("qa_candidates", 3)),
         ))
     @app.post("/api/qa/answer")
     def api_qa_answer() -> Response:
@@ -218,6 +219,13 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
     def api_package_status() -> Response:
         return jsonify({"queries": package.status()})
 
+    @app.post("/api/package/type")
+    def api_package_type() -> Response:
+        payload = request.get_json(force=True)
+        changed = package.set_task(
+            str(payload.get("query_name", "")), str(payload.get("task", ""))
+        )
+        return jsonify({"query": changed, "queries": package.status()})
     @app.post("/api/package/save")
     def api_package_save() -> Response:
         payload = request.get_json(force=True)

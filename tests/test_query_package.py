@@ -30,10 +30,28 @@ class QueryPackageTests(unittest.TestCase):
         self.assertEqual(status[1]["output_name"], "query-2-qa.csv")
 
     def test_rejects_nested_or_unknown_files(self) -> None:
-        for name in ("folder/query-1-kis.txt", "query-1-other.txt"):
+        for name in ("folder/query-1-kis.txt", "query-1.exe"):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 self.package.import_zip(package_zip({name: "query"}))
 
+    def test_arbitrary_txt_name_can_choose_type(self) -> None:
+        status = self.package.import_zip(package_zip({"cau-hoi-01.txt": "Màu gì?"}))
+        self.assertEqual((status[0]["task"], status[0]["task_suggested"]), ("kis", False))
+        changed = self.package.set_task("cau-hoi-01.txt", "qa")
+        self.assertEqual((changed["task"], changed["output_name"]), ("qa", "cau-hoi-01.csv"))
+        self.package.save("cau-hoi-01.txt", [
+            {"video_id": "L21_V001", "frame_idx": 345, "answer": "đỏ"}
+        ])
+
+    def test_changing_type_resets_saved_result(self) -> None:
+        self.package.import_zip(package_zip({"query-1-kis.txt": "mở laptop"}))
+        self.package.save("query-1-kis.txt", [
+            {"video_id": "L21_V001", "frame_idx": 345}
+        ])
+        changed = self.package.set_task("query-1-kis.txt", "qa")
+        self.assertFalse(changed["completed"])
+        with self.assertRaisesRegex(ValueError, "Incomplete queries"):
+            self.package.export_zip()
     def test_save_all_and_export_submission_root(self) -> None:
         self.package.import_zip(package_zip(self.queries))
         self.package.save("query-1-kis.txt", [

@@ -35,11 +35,13 @@ class AssistantService:
                 if task == "kis":
                     results = self._retrieve(query, options, bool(options.get("quality", True)))
                 elif task == "qa":
-                    results = self._retrieve(query, options, False)
+                    results = self._qa_auto(
+                        query, int(options.get("qa_candidates", 3))
+                    )
                 else:
                     results = [{"video_id": a.video_id, "frame_ids": list(a.frame_ids)}
                                for a in search_trake(self.engine, split_events(query))]
-                return {"task": task, "phase": "retrieval", "query": query,
+                return {"task": task, "phase": ("answered" if task == "qa" else "retrieval"), "query": query,
                         "count": len(results),
                         "elapsed_ms": round((time.perf_counter()-started)*1000),
                         "results": results}
@@ -51,6 +53,16 @@ class AssistantService:
             int(options.get("candidate_k", 5000)), int(options.get("per_video", 3)),
             float(options.get("min_time_gap", 2.0)), quality)
 
+    def _qa_auto(self, question: str, candidates: int) -> list[dict[str, Any]]:
+        if candidates < 1 or candidates > 10:
+            raise ValueError("qa_candidates must be in [1, 10]")
+        rows = self.engine.search(question, candidates, 5000, 3, 2.0, False)
+        selections = [
+            {"video_id": row["video_id"], "frame_idx": row["frame_idx"],
+             "keyframe_no": row["keyframe_no"]}
+            for row in rows
+        ]
+        return self._answer_selected_locked(question, selections)
     def answer_selected(self, question: str,
                         selections: list[dict[str, Any]]) -> dict[str, Any]:
         question = question.strip()

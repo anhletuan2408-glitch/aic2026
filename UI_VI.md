@@ -27,11 +27,11 @@ loaded, then choose per query in the web UI:
 ## Three preliminary tasks
 
 - Textual KIS: hybrid FAISS retrieval with optional SigLIP2 reranking.
-- Visual Q&A: retrieves candidate frames first. The user selects 1-20 frames, then Qwen2.5-VL-3B-Instruct NF4 answers each selected frame separately before CSV export.
+- Visual Q&A: one click internally retrieves candidate frames, then Qwen2.5-VL-3B-Instruct NF4 answers every candidate and returns final `<video_id>, <frame_idx>, <answer>` rows.
 - TRAKE: splits ordered events and aligns increasing frames within one video.
 
-The task tabs control the CSV schema automatically. Q&A CSV rows are created only after the user selects frames and runs Qwen. Model swapping is serialized and may take roughly 1-2 minutes on a 4 GB RTX 3050 Ti.
+The task tabs control the CSV schema automatically. Q&A has no separate image-selection stage. Model swapping is serialized and may take roughly 1-2 minutes on a 4 GB RTX 3050 Ti.
 ## Two operating modes
 
 - Free query: keeps the original workflow for ad-hoc KIS, Q&A, and TRAKE searches and individual CSV downloads.
-- BTC package: imports a ZIP containing UTF-8 `query-*-kis.txt`, `query-*-qa.txt`, and `query-*-trake.txt` files at the archive root. The task and output filename are locked to each imported filename. Save selected results for every query, then export one validated `submission.zip` containing `submission/query-*.csv`.
+- Imported data: accepts a ZIP containing root-level UTF-8 `.txt` queries. Select KIS, Q&A, or TRAKE for each query, save its results, then export one validated `submission.zip` containing `submission/<query-name>.csv`. A `-kis`, `-qa`, or `-trake` suffix is only an initial suggestion and can be changed.

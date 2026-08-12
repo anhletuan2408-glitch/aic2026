@@ -12,7 +12,7 @@ from submission import MAX_ANSWERS, validate_video_id
 from trake_search import split_events
 
 
-QUERY_TEXT = re.compile(r"^(query-.+-(kis|qa|trake))\.txt$")
+TASK_SUFFIX = re.compile(r"-(kis|qa|trake)$", re.IGNORECASE)
 
 
 class QueryPackage:
@@ -35,9 +35,12 @@ class QueryPackage:
                 for entry in files:
                     if "/" in entry.filename or "\\" in entry.filename:
                         raise ValueError("Query files must be at the ZIP root")
-                    match = QUERY_TEXT.fullmatch(entry.filename)
-                    if not match:
+                    path = Path(entry.filename)
+                    if (path.suffix.casefold() != ".txt" or not path.stem
+                            or len(entry.filename) > 128 or entry.filename.startswith(".")):
                         raise ValueError(f"Invalid BTC query filename: {entry.filename}")
+                    match = TASK_SUFFIX.search(path.stem)
+                    suggested_task = match.group(1).casefold() if match else "kis"
                     if entry.file_size > 64 * 1024:
                         raise ValueError(f"Query is too large: {entry.filename}")
                     text = archive.read(entry).decode("utf-8-sig").strip()
@@ -45,8 +48,9 @@ class QueryPackage:
                         raise ValueError(f"Empty query: {entry.filename}")
                     found[entry.filename] = {
                         "name": entry.filename,
-                        "output_name": f"{match.group(1)}.csv",
-                        "task": match.group(2),
+                        "output_name": f"{path.stem}.csv",
+                        "task": suggested_task,
+                        "task_suggested": bool(match),
                         "text": text,
                         "completed": False,
                         "rows": 0,
@@ -63,6 +67,24 @@ class QueryPackage:
     def status(self) -> list[dict[str, object]]:
         return [dict(query) for query in self.queries.values()]
 
+    def set_task(self, name: str, task: str) -> dict[str, object]:
+        task = task.strip().casefold()
+        if task not in {"kis", "qa", "trake"}:
+            raise ValueError("task must be kis, qa, or trake")
+        with self.lock:
+            if name not in self.queries:
+                raise ValueError(f"Unknown imported query: {name}")
+            query = self.queries[name]
+            if query["task"] != task:
+                query["task"] = task
+                query["completed"], query["rows"] = False, 0
+                self.outputs.pop(name, None)
+                if self.workspace is not None:
+                    output = self.workspace / str(query["output_name"])
+                    if output.exists():
+                        output.unlink()
+                self._persist()
+            return dict(query)
     def save(self, name: str, rows: list[dict[str, object]]) -> dict[str, object]:
         with self.lock:
             if name not in self.queries:
@@ -132,7 +154,7 @@ class QueryPackage:
         manifest = self.workspace / "package.json"
         if manifest.exists():
             manifest.unlink()
-        for path in self.workspace.glob("query-*.csv"):
+        for path in self.workspace.glob("*.csv"):
             if path.is_file():
                 path.unlink()
 

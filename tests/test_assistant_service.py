@@ -19,11 +19,9 @@ class AssistantServiceTests(TestCase):
         self.engine = FakeEngine()
         self.service = AssistantService(self.engine, object())
 
-    def test_kis_qa_retrieval_and_invalid_task(self):
-        kis = self.service.run("kis", "xe máy", top_k=1, quality=False)
-        qa = self.service.run("qa", "Phương tiện gì?", top_k=1)
+    def test_kis_retrieval_and_invalid_task(self):
+        kis = self.service.run("kis", "xe may", top_k=1, quality=False)
         self.assertEqual((kis["task"], kis["count"]), ("kis", 1))
-        self.assertEqual((qa["phase"], "answer" in qa["results"][0]), ("retrieval", False))
         with self.assertRaises(ValueError):
             self.service.run("auto", "query")
 
@@ -45,6 +43,20 @@ class AssistantServiceTests(TestCase):
         self.assertEqual(data["phase"], "answered")
         self.assertEqual(data["results"], [{"video_id":"L21_V001","frame_idx":345,
                                              "keyframe_no":12,"answer":"xe máy"}])
+        image.close.assert_called_once()
+        self.assertEqual(self.engine.model, "restored")
+
+    @patch("assistant_service.SentenceTransformer", return_value="restored")
+    @patch("assistant_service.context_images")
+    @patch("assistant_service.QwenVLAnswerer")
+    def test_qa_runs_retrieval_and_answer_in_one_request(self, qwen, images, _clip):
+        image = Mock()
+        images.return_value = [image]
+        qwen.return_value = SimpleNamespace(answer=lambda question, frames: "xe may")
+        data = self.service.run("qa", "Phuong tien gi?", qa_candidates=1)
+        self.assertEqual(data["phase"], "answered")
+        self.assertEqual(data["results"], [{"video_id":"L21_V001","frame_idx":345,
+                                             "keyframe_no":12,"answer":"xe may"}])
         image.close.assert_called_once()
         self.assertEqual(self.engine.model, "restored")
 
