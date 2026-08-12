@@ -4,10 +4,14 @@ import argparse
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from submission import TRAKEAnswer, write_trake_submission
 from search import load_metadata
-from web_app_vi import MultilingualFaissEngine
+if TYPE_CHECKING:
+    from web_app_vi import MultilingualFaissEngine
+else:
+    MultilingualFaissEngine = Any
 
 
 @dataclass(frozen=True)
@@ -122,7 +126,8 @@ def main() -> None:
     path = Path(args.query)
     query_text = path.read_text(encoding="utf-8-sig") if path.is_file() else args.query
     events = args.event or split_events(query_text)
-    engine = MultilingualFaissEngine(args.index_dir, args.device)
+    from web_app_vi import MultilingualFaissEngine as Engine
+    engine = Engine(args.index_dir, args.device)
     answers = search_trake(engine, events)
     if not answers:
         raise RuntimeError("No video contained an increasing candidate sequence for all events")

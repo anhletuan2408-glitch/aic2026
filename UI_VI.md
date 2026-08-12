@@ -23,3 +23,11 @@ loaded, then choose per query in the web UI:
 - `Nhanh` (UI default): interactive exploration without SigLIP2 latency.
 - `Chất lượng`: rerank 300 candidates before selecting/exporting answers.
 
+
+## Three preliminary tasks
+
+- Textual KIS: hybrid FAISS retrieval with optional SigLIP2 reranking.
+- Visual Q&A: retrieves 100 frames, swaps retrieval models out of GPU memory, answers with Qwen2.5-VL-3B-Instruct NF4, then restores retrieval.
+- TRAKE: splits ordered events and aligns increasing frames within one video.
+
+The task selector controls the CSV schema automatically. Q&A model swapping is serialized and may take roughly 1-2 minutes on a 4 GB RTX 3050 Ti. Use 3 candidates for speed, 6 by default, or 12 for a broader answer consensus.

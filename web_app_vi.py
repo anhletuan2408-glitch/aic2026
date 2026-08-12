@@ -19,6 +19,7 @@ from search import choose_device, load_metadata
 from search_kis import select_candidates
 from submission import MAX_ANSWERS
 from web_app import KeyframeStore
+from assistant_service import AssistantService
 
 MODEL_NAME = "sentence-transformers/clip-ViT-B-32-multilingual-v1"
 
@@ -130,6 +131,8 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
     else:
         search_engine = engine
 
+    assistant = AssistantService(search_engine, keyframe_store)
+
     @app.errorhandler(ValueError)
     def handle_value_error(error: ValueError) -> tuple[Response, int]:
         return jsonify({"error": str(error)}), 400
@@ -141,7 +144,7 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
     @app.get("/api/health")
     def health() -> Response:
         index = getattr(search_engine, "index", None)
-        return jsonify({"status": "ready", "model": getattr(search_engine, "model_name", MODEL_NAME),
+        return jsonify({"status": assistant.status, "model": getattr(search_engine, "model_name", MODEL_NAME),
             "device": getattr(search_engine, "device", "test"), "vectors": int(getattr(index, "ntotal", 0)),
             "videos": int(getattr(keyframe_store, "video_count", 0)),
             "index": "FAISS IndexFlatIP", "language": "Vietnamese",
@@ -161,9 +164,10 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
             bool(payload.get("quality", True))
             and getattr(search_engine, "reranker", None) is not None
         )
-        results = search_engine.search(query, int(payload.get("top_k", 50)),
-            int(payload.get("candidate_k", 5000)), int(payload.get("per_video", 3)),
-            float(payload.get("min_time_gap", 2.0)), use_quality)
+        with assistant.lock:
+            results = search_engine.search(query, int(payload.get("top_k", 50)),
+                int(payload.get("candidate_k", 5000)), int(payload.get("per_video", 3)),
+                float(payload.get("min_time_gap", 2.0)), use_quality)
         return jsonify({"query": query, "count": len(results),
             "elapsed_ms": round((time.perf_counter() - started) * 1000),
             "mode": "quality" if use_quality else "fast",
@@ -175,6 +179,19 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
                 else "multilingual-clip -> faiss -> diversify"
             ), "results": results})
 
+    @app.post("/api/assistant")
+    def api_assistant() -> Response:
+        payload = request.get_json(force=True)
+        return jsonify(assistant.run(
+            str(payload.get("task", "kis")), str(payload.get("query", "")),
+            top_k=int(payload.get("top_k", 50)),
+            candidate_k=int(payload.get("candidate_k", 5000)),
+            per_video=int(payload.get("per_video", 3)),
+            min_time_gap=float(payload.get("min_time_gap", 2.0)),
+            quality=(bool(payload.get("quality", True))
+                     and getattr(search_engine, "reranker", None) is not None),
+            vlm_candidates=int(payload.get("vlm_candidates", 6)),
+        ))
     @app.get("/keyframe/<video_id>/<int:keyframe_no>.jpg")
     def keyframe(video_id: str, keyframe_no: int) -> Response:
         try:

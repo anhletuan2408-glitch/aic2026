@@ -6,6 +6,7 @@ import io
 import re
 from collections import Counter
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import torch
 from PIL import Image
@@ -13,7 +14,10 @@ from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2_5_VLForConditi
 
 from submission import QAAnswer, write_qa_submission
 from web_app import KeyframeStore
-from web_app_vi import MultilingualFaissEngine
+if TYPE_CHECKING:
+    from web_app_vi import MultilingualFaissEngine
+else:
+    MultilingualFaissEngine = Any
 
 
 QWEN_VL_MODEL = "Qwen/Qwen2.5-VL-3B-Instruct"
@@ -204,7 +208,8 @@ def main() -> None:
     args = parser.parse_args()
     path = Path(args.question)
     question = path.read_text(encoding="utf-8-sig").strip() if path.is_file() else args.question
-    engine = MultilingualFaissEngine(args.index_dir, args.device)
+    from web_app_vi import MultilingualFaissEngine as Engine
+    engine = Engine(args.index_dir, args.device)
     store = KeyframeStore(args.zip_dir)
     rows = engine.search(
         question, 100, candidate_k=5000,
