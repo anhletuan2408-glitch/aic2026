@@ -27,11 +27,21 @@ loaded, then choose per query in the web UI:
 ## Three preliminary tasks
 
 - Textual KIS: hybrid FAISS retrieval with optional SigLIP2 reranking.
-- Visual Q&A: one click internally retrieves candidate frames, then Qwen2.5-VL-3B-Instruct NF4 answers every candidate and returns final `<video_id>, <frame_idx>, <answer>` rows.
-- TRAKE: splits ordered events and aligns increasing frames within one video.
+- Visual Q&A has two flows: **Selected frame** asks Qwen directly without retrieval; **Auto search** retrieves 100, reranks, runs Qwen on the top 5/8/10 frames, and returns up to 100 consensus-ranked `<video_id>, <frame_idx>, <answer>` rows.
+- TRAKE: splits ordered events and uses k-best dynamic programming to align increasing frames within one video.
 
-The task tabs control the CSV schema automatically. Q&A has no separate image-selection stage. Model swapping is serialized and may take roughly 1-2 minutes on a 4 GB RTX 3050 Ti.
+The task tabs control the CSV schema automatically. In free-query mode, run KIS and click **Hỏi frame này** for direct Q&A. Imported QA queries use automatic search. Model swapping is serialized and stays within the 4 GB GPU target.
 ## Two operating modes
 
 - Free query: keeps the original workflow for ad-hoc KIS, Q&A, and TRAKE searches and individual CSV downloads.
 - Imported data: accepts a ZIP containing root-level UTF-8 `.txt` queries. Select KIS, Q&A, or TRAKE for each query, save its results, then export one validated `submission.zip` containing `submission/<query-name>.csv`. A `-kis`, `-qa`, or `-trake` suffix is only an initial suggestion and can be changed.
+
+## Ground-truth benchmark
+
+Create an organizer-style UTF-8 JSONL following `ground_truth/README.md`, place no-header predictions in one directory as `<query_id>.csv`, then run:
+
+```powershell
+.\.venv\Scripts\python.exe evaluate_suite.py ground_truth\preliminary.jsonl outputs\predictions --output outputs\benchmark_suite.json
+```
+
+The report contains R@1/5/20/50/100 and Final Score overall, per task, and per query. The 500-query metadata-title report is only a proxy throughput/ablation benchmark, not official accuracy.

@@ -51,15 +51,11 @@ Required output:
 <video_id>,<frame_id>,<answer>
 ```
 
-Planned task-specific stage:
+Two task-specific flows are implemented:
 
-1. Use the same FAISS retrieval to find candidate videos and timestamps.
-2. Decode a dense clip around each candidate timestamp.
-3. Run a vision-language model over the clip and question.
-4. Normalize Vietnamese/English answers and rerank by retrieval plus answer
-   confidence.
-5. Export at most 100 ranked rows.
-
+1. **Selected frame:** the user chooses a KIS result and Qwen answers that exact frame without another search.
+2. **Automatic submission:** retrieve 100 candidates, expose three frames per promising video to SigLIP2, preserve early video diversity, run Qwen sequentially on the top 5/8/10 frames, and consensus-rank up to 100 answer/frame combinations.
+3. CLIP/SigLIP and Qwen are swapped serially so the quality pipeline fits the 4 GB VRAM target.
 ## TRAKE
 
 Required output:
@@ -68,16 +64,7 @@ Required output:
 <video_id>,<frame_id_1>,...,<frame_id_n>
 ```
 
-Planned task-specific stage:
-
-1. Split the query into ordered semantic events.
-2. Encode every event and retrieve candidates with the same FAISS index.
-3. Aggregate event evidence to rank a single video.
-4. Enforce increasing timestamps with dynamic programming.
-5. Decode dense frames around every chosen keyframe for sub-10-frame
-   alignment.
-6. Export at most 100 ranked event sequences.
-
+The query is split into ordered events. Each event retrieves a candidate pool with FAISS. A k-best dynamic program then keeps globally ordered paths per video, using retrieval similarity and temporal separation, and exports up to 100 event sequences.
 ## Local scoring
 
 `submission.py` implements KIS, Q&A, and TRAKE R-Scores plus the official
@@ -105,7 +92,7 @@ Ground-truth JSON examples:
 }
 ```
 
-Score one ranked CSV:
+Score one ranked CSV, or use `evaluate_suite.py` with the unified JSONL schema in `ground_truth/README.md`:
 
 ```powershell
 .\.venv\Scripts\python.exe evaluate.py kis `

@@ -57,6 +57,7 @@ def select_candidates(
     top_k: int,
     per_video_limit: int,
     min_time_gap: float,
+    video_pool_limit: int | None = None,
 ) -> list[dict[str, object]]:
     if min_time_gap < 0:
         raise ValueError("min_time_gap must be non-negative")
@@ -91,6 +92,8 @@ def select_candidates(
             }
         )
 
+    if video_pool_limit is not None:
+        video_order = video_order[:video_pool_limit]
     selected: list[dict[str, object]] = []
     for round_index in range(per_video_limit):
         for video_id in video_order:
@@ -102,6 +105,37 @@ def select_candidates(
                 return selected
     return selected
 
+def diversify_ranked_rows(
+    rows: list[dict[str, object]], top_k: int,
+    unique_prefix: int = 20, per_video_limit: int = 3,
+) -> list[dict[str, object]]:
+    """Protect early-rank video coverage, then admit alternate frames."""
+    chosen: list[dict[str, object]] = []
+    seen_rows: set[tuple[str, int]] = set()
+    counts: dict[str, int] = {}
+    for row in rows:
+        video_id = str(row["video_id"])
+        key = (video_id, int(row["frame_idx"]))
+        if video_id in counts or key in seen_rows:
+            continue
+        chosen.append(row)
+        seen_rows.add(key)
+        counts[video_id] = 1
+        if len(chosen) >= min(unique_prefix, top_k):
+            break
+    for row in rows:
+        video_id = str(row["video_id"])
+        key = (video_id, int(row["frame_idx"]))
+        if key in seen_rows or counts.get(video_id, 0) >= per_video_limit:
+            continue
+        chosen.append(row)
+        seen_rows.add(key)
+        counts[video_id] = counts.get(video_id, 0) + 1
+        if len(chosen) >= top_k:
+            break
+    for rank, row in enumerate(chosen, start=1):
+        row["rank"] = rank
+    return chosen
 
 def main() -> None:
     args = parse_args()

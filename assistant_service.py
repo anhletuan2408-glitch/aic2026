@@ -8,7 +8,7 @@ from typing import Any
 import torch
 from sentence_transformers import SentenceTransformer
 
-from qna_search import QwenVLAnswerer, context_images
+from qna_search import QwenVLAnswerer, context_images, rank_qa_answers
 from rerank import Siglip2Reranker
 from trake_search import search_trake, split_events
 
@@ -56,13 +56,30 @@ class AssistantService:
     def _qa_auto(self, question: str, candidates: int) -> list[dict[str, Any]]:
         if candidates < 1 or candidates > 10:
             raise ValueError("qa_candidates must be in [1, 10]")
-        rows = self.engine.search(question, candidates, 5000, 3, 2.0, False)
+        rows = self.engine.search(
+            question, 100, 10000, 5, 1.5,
+            getattr(self.engine, "reranker", None) is not None,
+        )
         selections = [
             {"video_id": row["video_id"], "frame_idx": row["frame_idx"],
-             "keyframe_no": row["keyframe_no"]}
-            for row in rows
+             "keyframe_no": row["keyframe_no"], "_source_index": index}
+            for index, row in enumerate(rows[:candidates])
         ]
-        return self._answer_selected_locked(question, selections)
+        predicted = self._answer_selected_locked(question, selections)
+        answers = rank_qa_answers(
+            rows,
+            [(int(row.pop("_source_index")), str(row["answer"])) for row in predicted],
+        )
+        keyframes = {
+            (str(row["video_id"]), int(row["frame_idx"])): int(row["keyframe_no"])
+            for row in rows
+        }
+        return [
+            {"video_id": answer.video_id, "frame_idx": answer.frame_id,
+             "keyframe_no": keyframes[(answer.video_id, answer.frame_id)],
+             "answer": answer.answer}
+            for answer in answers
+        ]
     def answer_selected(self, question: str,
                         selections: list[dict[str, Any]]) -> dict[str, Any]:
         question = question.strip()
@@ -110,8 +127,11 @@ class AssistantService:
                 finally:
                     for image in images:
                         image.close()
-                results.append({"video_id": video_id, "frame_idx": frame_idx,
-                                "keyframe_no": keyframe_no, "answer": answer})
+                result = {"video_id": video_id, "frame_idx": frame_idx,
+                          "keyframe_no": keyframe_no, "answer": answer}
+                if "_source_index" in selected:
+                    result["_source_index"] = int(selected["_source_index"])
+                results.append(result)
             if not results:
                 raise RuntimeError("Qwen-VL produced no answers for selected frames")
             return results

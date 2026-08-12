@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from search_kis import select_candidates
+from search_kis import diversify_ranked_rows, select_candidates
 
 
 class CandidateSelectionTests(unittest.TestCase):
@@ -53,6 +53,21 @@ class CandidateSelectionTests(unittest.TestCase):
         )
         self.assertEqual([row["rank"] for row in selected], [1, 2, 3])
 
+    def test_reranked_output_keeps_early_video_coverage_then_alternates(self) -> None:
+        rows = [
+            {"video_id":"L21_V001","frame_idx":10,"score":.99},
+            {"video_id":"L21_V001","frame_idx":20,"score":.98},
+            {"video_id":"L21_V002","frame_idx":30,"score":.97},
+            {"video_id":"L21_V003","frame_idx":40,"score":.96},
+            {"video_id":"L21_V002","frame_idx":50,"score":.95},
+        ]
+        selected = diversify_ranked_rows(rows, top_k=5, unique_prefix=3, per_video_limit=2)
+        self.assertEqual(
+            [(row["video_id"], row["frame_idx"]) for row in selected],
+            [("L21_V001",10),("L21_V002",30),("L21_V003",40),
+             ("L21_V001",20),("L21_V002",50)],
+        )
+        self.assertEqual([row["rank"] for row in selected], [1,2,3,4,5])
     def test_negative_time_gap_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             select_candidates([], np.array([], dtype=np.float32), {}, 1, 1, -1.0)

@@ -42,7 +42,7 @@ def fuse_query_rankings(
 ) -> tuple[list[int], np.ndarray]:
     if not rankings:
         return [], np.empty(0, dtype=np.float32)
-    weights = weights or [1.0, *([0.35] * (len(rankings) - 1))]
+    weights = weights or [1.0, *([0.10] * (len(rankings) - 1))]
     if len(weights) != len(rankings):
         raise ValueError("weights and rankings must have equal length")
     scores: dict[int, float] = {}

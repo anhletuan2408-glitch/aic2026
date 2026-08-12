@@ -16,6 +16,7 @@ if ($Mode -eq "fast") {
 } elseif ($Mode -eq "balanced") {
     $ModeArgs = @("--reranker-model", "google/siglip2-base-patch16-224")
 }
+$ModeArgs += @("--query-ensemble")
 
 & $PythonExe (Join-Path $ProjectDir "web_app_vi.py") `
     --index-dir (Join-Path $ProjectDir "index") `

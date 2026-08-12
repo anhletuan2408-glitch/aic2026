@@ -16,7 +16,7 @@ from retrieval_enhancements import (
     expand_query, fuse_query_rankings,
 )
 from search import choose_device, load_metadata
-from search_kis import select_candidates
+from search_kis import diversify_ranked_rows, select_candidates
 from submission import MAX_ANSWERS
 from web_app import KeyframeStore
 from assistant_service import AssistantService
@@ -98,12 +98,16 @@ class MultilingualFaissEngine:
             if self.reranker and quality else top_k
         )
         selected = select_candidates(
-            ranked_ids, ranked_scores, metadata, selection_size, per_video, min_time_gap
+            ranked_ids, ranked_scores, metadata, selection_size, per_video, min_time_gap,
+            video_pool_limit=(max(1, selection_size // per_video)
+                              if self.reranker and quality else None),
         )
         for row in selected:
             row["matched_objects"] = top_labels
         if self.reranker is not None and quality:
             selected = self.reranker.rerank(query, selected)
+            selected = diversify_ranked_rows(selected, top_k, unique_prefix=20,
+                                             per_video_limit=per_video)
         return selected[:top_k]
 
 def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
