@@ -11,6 +11,10 @@ cd E:\AIC2026
 powershell -ExecutionPolicy Bypass -File .\run_ui_vi.ps1
 ```
 
-Open http://127.0.0.1:7860. Pass `-Device cuda` when CUDA is available.
+Open http://127.0.0.1:7860. Use `-Mode fast` for exploration and `quality` for final ranked results.
 The launcher reuses the model cache inside `.venv\model-cache`.
+
+- `fast`: hybrid retrieval only, lowest latency.
+- `balanced`: rerank 120 candidates with SigLIP2 Base-224.
+- `quality` (default): rerank 300 candidates with SigLIP2 Large-384; measured peak was about 2.70 GB VRAM on this machine.
 

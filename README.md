@@ -1,5 +1,8 @@
 # AIC 2026 Batch 1 - FAISS baseline
 
+For the current competitive Vietnamese hybrid pipeline and its three runtime
+profiles, see [HYBRID.md](HYBRID.md) and [UI_VI.md](UI_VI.md).
+
 This project builds an exact cosine-similarity index from the organizer-provided
 OpenAI CLIP ViT-B/32 keyframe vectors. It does not re-encode videos or keyframes.
 The text encoder uses OpenCLIP's `ViT-B-32-quickgelu` model identifier because

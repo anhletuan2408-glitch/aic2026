@@ -8,6 +8,10 @@ import faiss
 import numpy as np
 from flask import Flask, Response, jsonify, render_template, request
 from sentence_transformers import SentenceTransformer
+from hybrid_search import HybridConfig, HybridSignals, reciprocal_rank_fusion
+from rerank import (
+    RerankConfig, SIGLIP2_BASE_MODEL, SIGLIP2_MODEL, Siglip2Reranker
+)
 from search import choose_device, load_metadata
 from search_kis import select_candidates
 from submission import MAX_ANSWERS
@@ -16,13 +20,22 @@ from web_app import KeyframeStore
 MODEL_NAME = "sentence-transformers/clip-ViT-B-32-multilingual-v1"
 
 class MultilingualFaissEngine:
-    def __init__(self, index_dir: Path, device: str = "auto") -> None:
+    def __init__(self, index_dir: Path, device: str = "auto",
+                 hybrid_dir: Path | None = None, reranker: object | None = None) -> None:
         self.device = choose_device(device)
         self.model_name = MODEL_NAME
         self.index = faiss.read_index(str(index_dir / "keyframes.faiss"))
         self.metadata_path = index_dir / "metadata.sqlite3"
         self.model = SentenceTransformer(MODEL_NAME, device=self.device)
         self._model_lock = threading.Lock()
+        hybrid_dir = hybrid_dir or index_dir / "hybrid"
+        self.hybrid = (
+            HybridSignals(hybrid_dir, device="cpu")
+            if (hybrid_dir / "hybrid_manifest.json").exists()
+            else None
+        )
+        self.hybrid_config = HybridConfig()
+        self.reranker = reranker
 
     def encode(self, query: str) -> np.ndarray:
         query = query.strip()
@@ -40,15 +53,61 @@ class MultilingualFaissEngine:
         candidate_k = min(max(candidate_k, top_k), self.index.ntotal)
         scores, ids = self.index.search(vector, candidate_k)
         ranked_ids = [int(value) for value in ids[0] if value >= 0]
-        metadata = load_metadata(self.metadata_path, ranked_ids)
-        return select_candidates(ranked_ids, scores[0], metadata, top_k, per_video, min_time_gap)
+        ranked_scores = scores[0]
+        top_labels: list[str] = []
+        if self.hybrid is not None:
+            text_vector = self.hybrid.encode(query)
+            object_ids, matched_labels = self.hybrid.object_ranking(
+                text_vector, self.hybrid_config
+            )
+            union_ids = list(dict.fromkeys([*ranked_ids, *object_ids]))
+            metadata = load_metadata(self.metadata_path, union_ids)
+            video_by_id = {
+                global_id: str(row["video_id"]) for global_id, row in metadata.items()
+            }
+            ranked_ids, ranked_scores = reciprocal_rank_fusion(
+                ranked_ids, object_ids, video_by_id,
+                self.hybrid.metadata_video_ranks(text_vector), self.hybrid_config
+            )
+            top_labels = [label for label, _ in matched_labels[:5]]
+        else:
+            metadata = load_metadata(self.metadata_path, ranked_ids)
+        selection_size = (
+            max(top_k, self.reranker.config.pool_size)
+            if self.reranker else top_k
+        )
+        selected = select_candidates(
+            ranked_ids, ranked_scores, metadata, selection_size, per_video, min_time_gap
+        )
+        for row in selected:
+            row["matched_objects"] = top_labels
+        if self.reranker is not None:
+            selected = self.reranker.rerank(query, selected)
+        return selected[:top_k]
 
 def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
                device: str = "auto", engine: object | None = None,
-               keyframes: object | None = None) -> Flask:
+               keyframes: object | None = None, rerank: bool = True,
+               reranker_model: str = SIGLIP2_MODEL) -> Flask:
     app = Flask(__name__)
-    search_engine = engine or MultilingualFaissEngine(index_dir or Path("index"), device)
     keyframe_store = keyframes or KeyframeStore(zip_dir or Path("."))
+    if engine is None:
+        resolved_device = choose_device(device)
+        reranker = (
+            Siglip2Reranker(
+                keyframe_store, resolved_device, model_name=reranker_model,
+                config=RerankConfig(
+                    batch_size=32,
+                    pool_size=120 if reranker_model == SIGLIP2_BASE_MODEL else 300
+                )
+            )
+            if rerank else None
+        )
+        search_engine = MultilingualFaissEngine(
+            index_dir or Path("index"), resolved_device, reranker=reranker
+        )
+    else:
+        search_engine = engine
 
     @app.errorhandler(ValueError)
     def handle_value_error(error: ValueError) -> tuple[Response, int]:
@@ -64,7 +123,12 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
         return jsonify({"status": "ready", "model": getattr(search_engine, "model_name", MODEL_NAME),
             "device": getattr(search_engine, "device", "test"), "vectors": int(getattr(index, "ntotal", 0)),
             "videos": int(getattr(keyframe_store, "video_count", 0)),
-            "index": "FAISS IndexFlatIP", "language": "Vietnamese"})
+            "index": "FAISS IndexFlatIP", "language": "Vietnamese",
+            "hybrid": getattr(search_engine, "hybrid", None) is not None,
+            "reranker": (
+                getattr(search_engine.reranker, "model_name", SIGLIP2_MODEL)
+                if getattr(search_engine, "reranker", None) else None
+            )})
 
     @app.post("/api/search")
     def api_search() -> Response:
@@ -76,7 +140,11 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
             float(payload.get("min_time_gap", 2.0)))
         return jsonify({"query": query, "count": len(results),
             "elapsed_ms": round((time.perf_counter() - started) * 1000),
-            "planner": "multilingual-clip -> faiss -> diversify", "results": results})
+            "planner": (
+                "multilingual-clip + objects + metadata -> rrf -> diversify"
+                if getattr(search_engine, "hybrid", None) is not None
+                else "multilingual-clip -> faiss -> diversify"
+            ), "results": results})
 
     @app.get("/keyframe/<video_id>/<int:keyframe_no>.jpg")
     def keyframe(video_id: str, keyframe_no: int) -> Response:
@@ -95,8 +163,18 @@ def main() -> None:
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument("--no-rerank", action="store_true")
+    parser.add_argument(
+        "--reranker-model", choices=[SIGLIP2_BASE_MODEL, SIGLIP2_MODEL],
+        default=SIGLIP2_MODEL
+    )
     args = parser.parse_args()
-    create_app(args.index_dir, args.zip_dir, args.device).run(host=args.host, port=args.port, debug=False, threaded=True)
+    create_app(
+        args.index_dir, args.zip_dir, args.device, rerank=not args.no_rerank,
+        reranker_model=args.reranker_model
+    ).run(
+        host=args.host, port=args.port, debug=False, threaded=True
+    )
 
 if __name__ == "__main__":
     main()
