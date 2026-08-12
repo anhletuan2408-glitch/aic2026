@@ -45,3 +45,8 @@ Create an organizer-style UTF-8 JSONL following `ground_truth/README.md`, place 
 ```
 
 The report contains R@1/5/20/50/100 and Final Score overall, per task, and per query. The 500-query metadata-title report is only a proxy throughput/ablation benchmark, not official accuracy.
+## OCR fusion
+
+Run `run_ocr_index.ps1` to build or resume the CPU RapidOCR FTS5 index while the CUDA web app remains available. See `OCR.md`. The System status panel reports the number of committed OCR frames. Exact/strong text matches are fused with CLIP, object, metadata, and SigLIP rankings.
+
+For a real accuracy loop, select a visually verified result and click **Lưu làm Ground Truth**, then run `benchmark_live.py` as documented in `ground_truth/README.md`.

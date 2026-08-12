@@ -15,6 +15,13 @@ class HybridFusionTests(unittest.TestCase):
         self.assertEqual(ids[0], 3)
         self.assertTrue(np.all(scores[:-1] >= scores[1:]))
 
+    def test_ocr_exact_text_can_promote_a_candidate(self):
+        config = HybridConfig(rrf_k=10, ocr_weight=2.0)
+        ids, _ = reciprocal_rank_fusion(
+            [1, 2, 3], [], {1:"a",2:"b",3:"c"}, {}, config,
+            ocr_ids=[3],
+        )
+        self.assertEqual(ids[0], 3)
     def test_base_only_keeps_original_order(self):
         ids, _ = reciprocal_rank_fusion(
             [7, 8, 9], [], {7: "a", 8: "b", 9: "c"}, {}, HybridConfig()

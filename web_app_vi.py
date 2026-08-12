@@ -9,6 +9,7 @@ import numpy as np
 from flask import Flask, Response, jsonify, render_template, request, send_file
 from sentence_transformers import SentenceTransformer
 from hybrid_search import HybridConfig, HybridSignals, reciprocal_rank_fusion
+from ocr_index import OCRSignals
 from rerank import (
     RerankConfig, SIGLIP2_BASE_MODEL, SIGLIP2_MODEL, Siglip2Reranker
 )
@@ -21,6 +22,7 @@ from submission import MAX_ANSWERS
 from web_app import KeyframeStore
 from assistant_service import AssistantService
 from query_package import QueryPackage
+from ground_truth_store import GroundTruthStore
 
 MODEL_NAME = "sentence-transformers/clip-ViT-B-32-multilingual-v1"
 
@@ -41,6 +43,8 @@ class MultilingualFaissEngine:
             else None
         )
         self.hybrid_config = HybridConfig()
+        ocr_path = index_dir / "ocr.sqlite3"
+        self.ocr = OCRSignals(ocr_path) if ocr_path.exists() else None
         self.reranker = reranker
         self.query_ensemble = query_ensemble
 
@@ -81,14 +85,16 @@ class MultilingualFaissEngine:
             object_ids, matched_labels = self.hybrid.object_ranking(
                 text_vector, self.hybrid_config
             )
-            union_ids = list(dict.fromkeys([*ranked_ids, *object_ids]))
+            ocr_ids = self.ocr.ranking(query) if self.ocr is not None else []
+            union_ids = list(dict.fromkeys([*ranked_ids, *object_ids, *ocr_ids]))
             metadata = load_metadata(self.metadata_path, union_ids)
             video_by_id = {
                 global_id: str(row["video_id"]) for global_id, row in metadata.items()
             }
             ranked_ids, ranked_scores = reciprocal_rank_fusion(
                 ranked_ids, object_ids, video_by_id,
-                self.hybrid.metadata_video_ranks(text_vector), self.hybrid_config
+                self.hybrid.metadata_video_ranks(text_vector), self.hybrid_config,
+                ocr_ids=ocr_ids,
             )
             top_labels = [label for label, _ in matched_labels[:5]]
         else:
@@ -115,7 +121,8 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
                keyframes: object | None = None, rerank: bool = True,
                reranker_model: str = SIGLIP2_MODEL,
                query_ensemble: bool = False,
-               query_package: object | None = None) -> Flask:
+               query_package: object | None = None,
+               ground_truth: object | None = None) -> Flask:
     app = Flask(__name__)
     keyframe_store = keyframes or KeyframeStore(zip_dir or Path("."))
     if engine is None:
@@ -142,6 +149,8 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
         QueryPackage(Path("outputs/package_session"))
         if engine is None else QueryPackage()
     )
+    gt_store = ground_truth or GroundTruthStore(Path("ground_truth/local.jsonl"))
+
 
     @app.errorhandler(ValueError)
     def handle_value_error(error: ValueError) -> tuple[Response, int]:
@@ -159,6 +168,8 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
             "videos": int(getattr(keyframe_store, "video_count", 0)),
             "index": "FAISS IndexFlatIP", "language": "Vietnamese",
             "hybrid": getattr(search_engine, "hybrid", None) is not None,
+            "ocr_frames": (getattr(search_engine, "ocr", None).count()
+                           if getattr(search_engine, "ocr", None) is not None else 0),
             "query_ensemble": getattr(search_engine, "query_ensemble", False),
             "reranker": (
                 getattr(search_engine.reranker, "model_name", SIGLIP2_MODEL)
@@ -183,7 +194,9 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
             "mode": "quality" if use_quality else "fast",
             "planner": (
                 (("query ensemble + " if getattr(search_engine, "query_ensemble", False) else "")
-                 + "clip + objects + metadata -> rrf"
+                 + "clip + objects + metadata"
+                 + (" + ocr" if getattr(search_engine, "ocr", None) else "")
+                 + " -> rrf"
                  + (" -> siglip2" if use_quality else ""))
                 if getattr(search_engine, "hybrid", None) is not None
                 else "multilingual-clip -> faiss -> diversify"
@@ -212,6 +225,15 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
         return jsonify(assistant.answer_selected(
             str(payload.get("question", "")), selections
         ))
+    @app.get("/api/ground-truth")
+    def api_ground_truth_status() -> Response:
+        records = gt_store.records()
+        return jsonify({"count": len(records), "records": records})
+
+    @app.post("/api/ground-truth")
+    def api_ground_truth_save() -> Response:
+        record = gt_store.upsert(request.get_json(force=True))
+        return jsonify({"record": record, "count": len(gt_store.records())})
     @app.post("/api/package/import")
     def api_package_import() -> Response:
         uploaded = request.files.get("package")

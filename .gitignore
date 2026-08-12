@@ -5,3 +5,5 @@ outputs/
 *.zip
 __pycache__/
 *.py[cod]
+
+ground_truth/local.jsonl

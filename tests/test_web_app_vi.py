@@ -1,8 +1,11 @@
 import io
 from types import SimpleNamespace
 import unittest
+import tempfile
+from pathlib import Path
 from zipfile import ZipFile
 from web_app_vi import MODEL_NAME, create_app
+from ground_truth_store import GroundTruthStore
 
 class FakeEngine:
     model_name=MODEL_NAME; device="cpu"; index=SimpleNamespace(ntotal=177321); reranker=object()
@@ -21,10 +24,23 @@ class FakeFrames:
 class WebAppVietnameseTests(unittest.TestCase):
     def setUp(self):
         self.engine=FakeEngine()
-        app=create_app(engine=self.engine,keyframes=FakeFrames())
+        self.temp=tempfile.TemporaryDirectory()
+        self.gt=GroundTruthStore(Path(self.temp.name)/"local.jsonl")
+        app=create_app(engine=self.engine,keyframes=FakeFrames(),ground_truth=self.gt)
         app.testing=True
         self.client=app.test_client()
 
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_ground_truth_api_upserts_record(self):
+        payload={"query_id":"kis-1","task":"kis","query":"red car",
+                 "video_id":"L21_V001","start":300,"end":400}
+        response=self.client.post("/api/ground-truth",json=payload)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.get_json()["count"],1)
+        data=self.client.get("/api/ground-truth").get_json()
+        self.assertEqual(data["records"][0]["query_id"],"kis-1")
     def test_health(self):
         data=self.client.get("/api/health").get_json()
         self.assertEqual((data["model"],data["vectors"],data["videos"],data["language"]),

@@ -15,6 +15,7 @@ class HybridConfig:
     object_weight: float = 0.45
     metadata_weight: float = 0.18
     temporal_weight: float = 0.20
+    ocr_weight: float = 1.10
     object_labels: int = 12
     object_candidates: int = 2500
 
@@ -86,6 +87,7 @@ def reciprocal_rank_fusion(
     metadata_ranks: dict[str, int],
     config: HybridConfig,
     temporal_ids: list[int] | None = None,
+    ocr_ids: list[int] | None = None,
 ) -> tuple[list[int], np.ndarray]:
     scores: dict[int, float] = {}
     for rank, global_id in enumerate(base_ids, start=1):
@@ -96,6 +98,10 @@ def reciprocal_rank_fusion(
         )
     for rank, global_id in enumerate(temporal_ids or [], start=1):
         scores[global_id] = scores.get(global_id, 0.0) + config.temporal_weight / (
+            config.rrf_k + rank
+        )
+    for rank, global_id in enumerate(ocr_ids or [], start=1):
+        scores[global_id] = scores.get(global_id, 0.0) + config.ocr_weight / (
             config.rrf_k + rank
         )
 

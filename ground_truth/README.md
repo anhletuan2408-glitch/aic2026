@@ -15,3 +15,14 @@ Run:
 ```
 
 A credible tuning set should contain organizer-style natural-language queries manually labelled against the videos, with all accepted QA answer strings. Metadata-title and model-generated labels are useful smoke tests but must not be reported as retrieval accuracy.
+## Annotation and live scoring
+
+In **Truy vấn tự do**, verify a result visually, select exactly one row, and click **Lưu làm Ground Truth**. The UI validates and atomically upserts `ground_truth/local.jsonl`. For QA, enter all accepted answer strings; for TRAKE, enter one `[start,end]` range per event.
+
+Run the deployed CUDA pipeline and score it in one resumable command:
+
+```powershell
+.\.venv\Scripts\python.exe benchmark_live.py ground_truth\local.jsonl --qa-candidates 5 --report outputs\ground_truth_benchmark.json
+```
+
+Existing `<query_id>.csv` predictions are reused. Pass `--force` only when rerunning every query after a model or ranking change.
