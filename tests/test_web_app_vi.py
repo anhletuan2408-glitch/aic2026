@@ -1,5 +1,7 @@
+import io
 from types import SimpleNamespace
 import unittest
+from zipfile import ZipFile
 from web_app_vi import MODEL_NAME, create_app
 
 class FakeEngine:
@@ -49,6 +51,25 @@ class WebAppVietnameseTests(unittest.TestCase):
         response=self.client.post("/api/qa/answer",json={"question":"Màu gì?","selections":[]})
         self.assertEqual(response.status_code,400)
         self.assertIn("Select between",response.get_json()["error"])
+    def test_import_save_and_export_btc_package(self):
+        source=io.BytesIO()
+        with ZipFile(source,"w") as archive:
+            archive.writestr("query-1-kis.txt","một người mở laptop")
+        response=self.client.post("/api/package/import",data={
+            "package":(io.BytesIO(source.getvalue()),"round1.zip")
+        },content_type="multipart/form-data")
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.get_json()["queries"][0]["task"],"kis")
+        response=self.client.post("/api/package/save",json={
+            "query_name":"query-1-kis.txt",
+            "results":[{"video_id":"L21_V001","frame_idx":345}],
+        })
+        self.assertEqual(response.status_code,200)
+        response=self.client.get("/api/package/export")
+        self.assertEqual(response.status_code,200)
+        with ZipFile(io.BytesIO(response.data)) as archive:
+            self.assertEqual(archive.namelist(),["submission/query-1-kis.csv"])
+            self.assertEqual(archive.read(archive.namelist()[0]),b"L21_V001,345\r\n")
     def test_empty_query_and_keyframe(self):
         self.assertEqual(self.client.post("/api/search",json={"query":" "}).status_code,400)
         response=self.client.get("/keyframe/L21_V001/12.jpg")

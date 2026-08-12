@@ -31,3 +31,7 @@ loaded, then choose per query in the web UI:
 - TRAKE: splits ordered events and aligns increasing frames within one video.
 
 The task tabs control the CSV schema automatically. Q&A CSV rows are created only after the user selects frames and runs Qwen. Model swapping is serialized and may take roughly 1-2 minutes on a 4 GB RTX 3050 Ti.
+## Two operating modes
+
+- Free query: keeps the original workflow for ad-hoc KIS, Q&A, and TRAKE searches and individual CSV downloads.
+- BTC package: imports a ZIP containing UTF-8 `query-*-kis.txt`, `query-*-qa.txt`, and `query-*-trake.txt` files at the archive root. The task and output filename are locked to each imported filename. Save selected results for every query, then export one validated `submission.zip` containing `submission/query-*.csv`.

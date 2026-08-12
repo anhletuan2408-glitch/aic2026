@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 import faiss
 import numpy as np
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, send_file
 from sentence_transformers import SentenceTransformer
 from hybrid_search import HybridConfig, HybridSignals, reciprocal_rank_fusion
 from rerank import (
@@ -20,6 +20,7 @@ from search_kis import select_candidates
 from submission import MAX_ANSWERS
 from web_app import KeyframeStore
 from assistant_service import AssistantService
+from query_package import QueryPackage
 
 MODEL_NAME = "sentence-transformers/clip-ViT-B-32-multilingual-v1"
 
@@ -109,7 +110,8 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
                device: str = "auto", engine: object | None = None,
                keyframes: object | None = None, rerank: bool = True,
                reranker_model: str = SIGLIP2_MODEL,
-               query_ensemble: bool = False) -> Flask:
+               query_ensemble: bool = False,
+               query_package: object | None = None) -> Flask:
     app = Flask(__name__)
     keyframe_store = keyframes or KeyframeStore(zip_dir or Path("."))
     if engine is None:
@@ -132,6 +134,10 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
         search_engine = engine
 
     assistant = AssistantService(search_engine, keyframe_store)
+    package = query_package or (
+        QueryPackage(Path("outputs/package_session"))
+        if engine is None else QueryPackage()
+    )
 
     @app.errorhandler(ValueError)
     def handle_value_error(error: ValueError) -> tuple[Response, int]:
@@ -201,6 +207,32 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
         return jsonify(assistant.answer_selected(
             str(payload.get("question", "")), selections
         ))
+    @app.post("/api/package/import")
+    def api_package_import() -> Response:
+        uploaded = request.files.get("package")
+        if uploaded is None:
+            raise ValueError("Missing package ZIP")
+        return jsonify({"queries": package.import_zip(uploaded.read())})
+
+    @app.get("/api/package/status")
+    def api_package_status() -> Response:
+        return jsonify({"queries": package.status()})
+
+    @app.post("/api/package/save")
+    def api_package_save() -> Response:
+        payload = request.get_json(force=True)
+        rows = payload.get("results", [])
+        if not isinstance(rows, list):
+            raise ValueError("results must be a list")
+        saved = package.save(str(payload.get("query_name", "")), rows)
+        return jsonify({"query": saved, "queries": package.status()})
+
+    @app.get("/api/package/export")
+    def api_package_export() -> Response:
+        return send_file(
+            io.BytesIO(package.export_zip()), mimetype="application/zip",
+            as_attachment=True, download_name="submission.zip"
+        )
     @app.get("/keyframe/<video_id>/<int:keyframe_no>.jpg")
     def keyframe(video_id: str, keyframe_no: int) -> Response:
         try:
