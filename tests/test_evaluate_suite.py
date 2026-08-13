@@ -40,6 +40,13 @@ class EvaluateSuiteTests(unittest.TestCase):
         self.assertEqual(report["overall"]["final_score"], 1.0)
         self.assertEqual(set(report["tasks"]), {"kis", "qa", "trake"})
 
+    def test_qa_frame_diagnostic_separates_retrieval_from_answer(self) -> None:
+        self.write("qa-1.csv", [["L21_V002", 350, "blue"]])
+        report = evaluate_suite(self.truth, self.predictions)
+        qa = next(row for row in report["details"] if row["query_id"] == "qa-1")
+        self.assertEqual(qa["final_score"], 0.0)
+        self.assertEqual(qa["frame_final_score"], 1.0)
+        self.assertEqual(report["diagnostics"]["qa_frame"]["final_score"], 1.0)
     def test_missing_prediction_scores_zero(self) -> None:
         report = evaluate_suite(self.truth, self.predictions)
         self.assertEqual(report["missing_predictions"], 3)

@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import argparse
 import re
+import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 from submission import TRAKEAnswer, write_trake_submission
 from search import load_metadata
@@ -98,6 +102,85 @@ def align_event_candidates(
         )
     aligned.sort(key=lambda item: item[0], reverse=True)
     return aligned[:max_answers]
+def joint_video_candidates(
+    event_rows: list[list[dict[str, object]]], limit: int = 80,
+) -> list[str]:
+    """Rank videos supported by every event before the conditioned second pass."""
+    if not event_rows or limit <= 0:
+        return []
+    evidence: list[dict[str, float]] = []
+    for rows in event_rows:
+        best: dict[str, float] = {}
+        for rank, row in enumerate(rows, start=1):
+            video_id = str(row["video_id"])
+            relevance = float(row.get("score", 0.0))
+            score = relevance + 1.0 / (60 + rank)
+            best[video_id] = max(best.get(video_id, -float("inf")), score)
+        evidence.append(best)
+    common = set(evidence[0])
+    for best in evidence[1:]:
+        common.intersection_update(best)
+    return sorted(
+        common, key=lambda video_id: sum(best[video_id] for best in evidence),
+        reverse=True,
+    )[:limit]
+
+
+def add_video_conditioned_candidates(
+    engine: MultilingualFaissEngine,
+    event_vectors: np.ndarray,
+    event_rows: list[list[dict[str, object]]],
+    video_ids: list[str],
+    per_video: int,
+) -> None:
+    """Search every frame in jointly supported videos, then merge per-event rows."""
+    if not video_ids:
+        return
+    placeholders = ",".join("?" for _ in video_ids)
+    with closing(sqlite3.connect(engine.metadata_path)) as connection:
+        records = connection.execute(
+            f"SELECT global_id,video_id,frame_idx,pts_time FROM keyframes "
+            f"WHERE video_id IN ({placeholders}) ORDER BY global_id",
+            video_ids,
+        ).fetchall()
+    by_video: dict[str, list[tuple[int, int, float]]] = {}
+    for global_id, video_id, frame_idx, pts_time in records:
+        by_video.setdefault(str(video_id), []).append(
+            (int(global_id), int(frame_idx), float(pts_time))
+        )
+    additions: list[list[dict[str, object]]] = [[] for _ in event_rows]
+    for video_id in video_ids:
+        video_records = by_video.get(video_id, [])
+        if not video_records:
+            continue
+        global_ids = np.asarray([row[0] for row in video_records], dtype=np.int64)
+        frame_vectors = engine.index.reconstruct_batch(global_ids)
+        scores = np.asarray(event_vectors @ frame_vectors.T, dtype=np.float32)
+        count = min(per_video, len(video_records))
+        for event_index, event_scores in enumerate(scores):
+            top = np.argsort(event_scores)[-count:][::-1]
+            for index in top:
+                _, frame_idx, pts_time = video_records[int(index)]
+                additions[event_index].append({
+                    "video_id": video_id,
+                    "frame_idx": frame_idx,
+                    "pts_time": pts_time,
+                    "score": float(event_scores[int(index)]),
+                })
+    for rows, extra in zip(event_rows, additions):
+        merged = {
+            (str(row["video_id"]), int(row["frame_idx"])): row for row in rows
+        }
+        for row in extra:
+            key = (str(row["video_id"]), int(row["frame_idx"]))
+            if key not in merged or float(row["score"]) > float(merged[key]["score"]):
+                merged[key] = row
+        rows[:] = sorted(
+            merged.values(), key=lambda row: float(row.get("score", -2.0)),
+            reverse=True,
+        )
+
+
 def search_trake(
     engine: MultilingualFaissEngine,
     events: list[str],
@@ -127,6 +210,10 @@ def search_trake(
                 "score": score_by_id[global_id],
             })
         rows.append(event_rows)
+    joint_videos = joint_video_candidates(rows)
+    add_video_conditioned_candidates(
+        engine, vectors, rows, joint_videos, per_video
+    )
     return [answer for _, answer in align_event_candidates(rows)]
 
 

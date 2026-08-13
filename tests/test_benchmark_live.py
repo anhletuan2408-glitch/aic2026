@@ -4,11 +4,28 @@ import csv
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
-from benchmark_live import result_rows, write_prediction
+from benchmark_live import call_api, result_rows, write_prediction
 
 
 class BenchmarkLiveTests(unittest.TestCase):
+    @patch("benchmark_live.wait_for_health")
+    @patch("benchmark_live.urllib.request.urlopen")
+    def test_api_retries_after_connection_reset(self, urlopen, wait_health) -> None:
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'{"count": 1, "results": []}'
+        urlopen.side_effect = [ConnectionResetError("reset"), response]
+        result = call_api(
+            "http://127.0.0.1:7860",
+            {"query_id":"qa-1","task":"qa","query":"question"},
+            qa_candidates=5,
+        )
+        self.assertEqual(result["count"], 1)
+        wait_health.assert_called_once()
+
     def test_result_rows_match_competition_schemas(self) -> None:
         self.assertEqual(result_rows("kis", [{"video_id":"L21_V001","frame_idx":10}]),
                          [["L21_V001",10]])

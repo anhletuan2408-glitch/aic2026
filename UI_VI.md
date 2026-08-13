@@ -11,6 +11,16 @@ cd E:\AIC2026
 powershell -ExecutionPolicy Bypass -File .\run_ui_vi.ps1
 ```
 
+For the recommended one-command startup (quality Web UI plus resumable CPU OCR):
+
+```powershell
+cd E:\AIC2026
+powershell -ExecutionPolicy Bypass -File .\run_all.ps1
+.\status.ps1
+```
+
+`run_all.ps1` starts only missing services, writes timestamped logs under `outputs/`, and resumes `index/ocr.sqlite3` instead of rebuilding completed frames. When invoked from a source checkout without `.venv`, it automatically uses `E:\AIC2026` as the deployed runtime.
+
 Open http://127.0.0.1:7860. Use `-Mode fast` for exploration and `quality` for final ranked results.
 The launcher reuses the model cache inside `.venv\model-cache`.
 
@@ -50,3 +60,13 @@ The report contains R@1/5/20/50/100 and Final Score overall, per task, and per q
 Run `run_ocr_index.ps1` to build or resume the CPU RapidOCR FTS5 index while the CUDA web app remains available. See `OCR.md`. The System status panel reports the number of committed OCR frames. Exact/strong text matches are fused with CLIP, object, metadata, and SigLIP rankings.
 
 For a real accuracy loop, select a visually verified result and click **Lưu làm Ground Truth**, then run `benchmark_live.py` as documented in `ground_truth/README.md`.
+## Measured smoke benchmark (not organizer accuracy)
+
+The local ground truth currently contains only 17 visually inspected smoke queries and several KIS/QA ranges are a single keyframe, so these numbers must not be presented as qualification probability or official accuracy.
+
+- KIS: Final Score improved from `0.32` to `0.46` on 10 local queries; R@1 improved from `0.20` to `0.30` and R@5 from `0.30` to `0.40`.
+- TRAKE: one three-event smoke query remains `0.20` (one of three moments matched in the top 20); the conditioned-video dynamic-programming pass did not regress this query.
+- Automatic QA: use a visual-only candidate profile (multilingual CLIP + SigLIP2) because KIS object/metadata/OCR fusion polluted visual-question candidates. On the QR diagnostic, the correct frame moved from outside the submitted top 100 to candidate rank 6. Qwen answered that frame as `Đỏ`, while the conservative local label currently accepts only pink variants, so the official local QA score remains zero until the label is visually adjudicated.
+- `evaluate_suite.py` reports `diagnostics.qa_frame` separately from the official QA score. This diagnostic does not alter organizer scoring; it only separates frame-retrieval failure from answer mismatch.
+
+For the 4 GB GPU, the recommended live QA workflow remains: retrieve with KIS, manually choose a verified frame, then use Selected-frame Q&A. Automatic QA analyzes 10 visual candidates and is useful as a fallback, but currently takes about 2.5-3 minutes per query on this machine.

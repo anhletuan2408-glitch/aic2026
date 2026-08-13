@@ -34,6 +34,33 @@ def clean_answer(value: str) -> str:
     return value[:100]
 
 
+def fuse_qa_candidate_rows(
+    primary: list[dict[str, object]],
+    secondary: list[dict[str, object]],
+    limit: int = 100,
+    secondary_weight: float = .5,
+    rrf_k: int = 60,
+) -> list[dict[str, object]]:
+    scores: dict[tuple[str, int], float] = {}
+    rows: dict[tuple[str, int], dict[str, object]] = {}
+    for ranking, weight in ((primary, 1.0), (secondary, secondary_weight)):
+        for rank, row in enumerate(ranking, start=1):
+            key = (str(row["video_id"]), int(row["frame_idx"]))
+            scores[key] = scores.get(key, 0.0) + weight / (rrf_k + rank)
+            if key not in rows or ranking is primary:
+                rows[key] = row
+    protected = [
+        (str(row["video_id"]), int(row["frame_idx"]))
+        for row in primary[: min(10, limit)]
+    ]
+    protected_set = set(protected)
+    ordered = protected + [
+        key for key in sorted(scores, key=scores.get, reverse=True)
+        if key not in protected_set
+    ][: max(0, limit - len(protected))]
+    return [{**rows[key], "rank": rank} for rank, key in enumerate(ordered, start=1)]
+
+
 def rank_qa_answers(
     rows: list[dict[str, object]],
     predictions: list[tuple[int, str]],
@@ -90,6 +117,30 @@ class QwenVLAnswerer:
                 model_name, dtype=torch.float32
             ).eval()
 
+    def _generate(self, content: list[dict[str, object]], max_new_tokens: int) -> str:
+        messages = [{"role": "user", "content": content}]
+        inputs = None
+        generated = None
+        try:
+            inputs = self.processor.apply_chat_template(
+                messages, tokenize=True, add_generation_prompt=True,
+                return_dict=True, return_tensors="pt",
+            ).to(self.device)
+            with torch.inference_mode():
+                generated = self.model.generate(
+                    **inputs, do_sample=False, max_new_tokens=max_new_tokens
+                )
+            prompt_length = inputs["input_ids"].shape[1]
+            return self.processor.batch_decode(
+                generated[:, prompt_length:], skip_special_tokens=True
+            )[0]
+        finally:
+            generated = None
+            inputs = None
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
     def answer(self, question: str, images: list[Image.Image]) -> str:
         content = [{"type": "image", "image": image} for image in images]
         content.append({
@@ -101,23 +152,7 @@ class QwenVLAnswerer:
                 f"Question: {question}"
             ),
         })
-        messages = [{"role": "user", "content": content}]
-        inputs = self.processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt",
-        ).to(self.device)
-        with torch.inference_mode():
-            generated = self.model.generate(
-                **inputs, do_sample=False, max_new_tokens=24
-            )
-        prompt_length = inputs["input_ids"].shape[1]
-        text = self.processor.batch_decode(
-            generated[:, prompt_length:], skip_special_tokens=True
-        )[0]
-        return clean_answer(text)
+        return clean_answer(self._generate(content, 24))
 
 
 def context_images(

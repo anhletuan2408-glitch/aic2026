@@ -17,7 +17,7 @@ from retrieval_enhancements import (
     expand_query, fuse_query_rankings,
 )
 from search import choose_device, load_metadata
-from search_kis import diversify_ranked_rows, select_candidates
+from search_kis import diversify_ranked_rows, protect_signal_rows, select_candidates
 from submission import MAX_ANSWERS
 from web_app import KeyframeStore
 from assistant_service import AssistantService
@@ -65,7 +65,8 @@ class MultilingualFaissEngine:
 
     def search(self, query: str, top_k: int, candidate_k: int = 5000,
                per_video: int = 3, min_time_gap: float = 2.0,
-               quality: bool = True) -> list[dict[str, object]]:
+               quality: bool = True, use_ocr: bool = True,
+               use_hybrid: bool = True) -> list[dict[str, object]]:
         if top_k < 1 or top_k > MAX_ANSWERS:
             raise ValueError(f"top_k must be in [1, {MAX_ANSWERS}]")
         query = query.strip()
@@ -80,12 +81,15 @@ class MultilingualFaissEngine:
             rankings, limit=candidate_k
         )
         top_labels: list[str] = []
-        if self.hybrid is not None:
+        if self.hybrid is not None and use_hybrid:
             text_vector = self.hybrid.encode(query)
             object_ids, matched_labels = self.hybrid.object_ranking(
                 text_vector, self.hybrid_config
             )
-            ocr_ids = self.ocr.ranking(query) if self.ocr is not None else []
+            ocr_ids = (
+                self.ocr.ranking(query)
+                if use_ocr and self.ocr is not None else []
+            )
             union_ids = list(dict.fromkeys([*ranked_ids, *object_ids, *ocr_ids]))
             metadata = load_metadata(self.metadata_path, union_ids)
             video_by_id = {
@@ -97,8 +101,12 @@ class MultilingualFaissEngine:
                 ocr_ids=ocr_ids,
             )
             top_labels = [label for label, _ in matched_labels[:5]]
+            ocr_ranks = {
+                global_id: rank for rank, global_id in enumerate(ocr_ids, start=1)
+            }
         else:
             metadata = load_metadata(self.metadata_path, ranked_ids)
+            ocr_ranks = {}
         selection_size = (
             max(top_k, self.reranker.config.pool_size)
             if self.reranker and quality else top_k
@@ -110,10 +118,17 @@ class MultilingualFaissEngine:
         )
         for row in selected:
             row["matched_objects"] = top_labels
+            row["_ocr_rank"] = ocr_ranks.get(
+                int(row["_global_id"]), len(ocr_ranks) + 1
+            )
         if self.reranker is not None and quality:
             selected = self.reranker.rerank(query, selected)
             selected = diversify_ranked_rows(selected, top_k, unique_prefix=20,
                                              per_video_limit=per_video)
+            selected = protect_signal_rows(selected)
+        for row in selected:
+            row.pop("_global_id", None)
+            row.pop("_ocr_rank", None)
         return selected[:top_k]
 
 def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
@@ -185,10 +200,18 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
             bool(payload.get("quality", True))
             and getattr(search_engine, "reranker", None) is not None
         )
+        search_args = [
+            query, int(payload.get("top_k", 50)),
+            int(payload.get("candidate_k", 5000)), int(payload.get("per_video", 3)),
+            float(payload.get("min_time_gap", 2.0)), use_quality,
+        ]
+        if "use_ocr" in payload or "use_hybrid" in payload:
+            search_args.extend([
+                bool(payload.get("use_ocr", True)),
+                bool(payload.get("use_hybrid", True)),
+            ])
         with assistant.lock:
-            results = search_engine.search(query, int(payload.get("top_k", 50)),
-                int(payload.get("candidate_k", 5000)), int(payload.get("per_video", 3)),
-                float(payload.get("min_time_gap", 2.0)), use_quality)
+            results = search_engine.search(*search_args)
         return jsonify({"query": query, "count": len(results),
             "elapsed_ms": round((time.perf_counter() - started) * 1000),
             "mode": "quality" if use_quality else "fast",
@@ -214,8 +237,17 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
             quality=(bool(payload.get("quality", True))
                      and getattr(search_engine, "reranker", None) is not None),
             vlm_candidates=int(payload.get("vlm_candidates", 6)),
-            qa_candidates=int(payload.get("qa_candidates", 3)),
+            qa_candidates=int(payload.get("qa_candidates", 10)),
         ))
+    @app.post("/api/qa/candidates")
+    def api_qa_candidates() -> Response:
+        payload = request.get_json(force=True)
+        question = str(payload.get("question", "")).strip()
+        if not question:
+            raise ValueError("Question must not be empty")
+        with assistant.lock:
+            rows = assistant._qa_candidate_rows(question)
+        return jsonify({"count": len(rows), "results": rows})
     @app.post("/api/qa/answer")
     def api_qa_answer() -> Response:
         payload = request.get_json(force=True)

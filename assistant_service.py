@@ -8,7 +8,10 @@ from typing import Any
 import torch
 from sentence_transformers import SentenceTransformer
 
-from qna_search import QwenVLAnswerer, context_images, rank_qa_answers
+from qna_search import (
+    QwenVLAnswerer, context_images, fuse_qa_candidate_rows, rank_qa_answers,
+)
+from retrieval_enhancements import qa_retrieval_query
 from rerank import Siglip2Reranker
 from trake_search import search_trake, split_events
 
@@ -56,10 +59,7 @@ class AssistantService:
     def _qa_auto(self, question: str, candidates: int) -> list[dict[str, Any]]:
         if candidates < 1 or candidates > 10:
             raise ValueError("qa_candidates must be in [1, 10]")
-        rows = self.engine.search(
-            question, 100, 10000, 5, 1.5,
-            getattr(self.engine, "reranker", None) is not None,
-        )
+        rows = self._qa_candidate_rows(question)
         selections = [
             {"video_id": row["video_id"], "frame_idx": row["frame_idx"],
              "keyframe_no": row["keyframe_no"], "_source_index": index}
@@ -80,6 +80,18 @@ class AssistantService:
              "answer": answer.answer}
             for answer in answers
         ]
+    def _qa_candidate_rows(self, question: str) -> list[dict[str, Any]]:
+        scene_query = qa_retrieval_query(question)
+        rows = self.engine.search(
+            scene_query, 100, 10000, 5, 1.5,
+            getattr(self.engine, "reranker", None) is not None, False, False,
+        )
+        if scene_query.casefold() != question.casefold():
+            original_rows = self.engine.search(
+                question, 100, 10000, 5, 1.5, False, False, False
+            )
+            rows = fuse_qa_candidate_rows(rows, original_rows)
+        return rows
     def answer_selected(self, question: str,
                         selections: list[dict[str, Any]]) -> dict[str, Any]:
         question = question.strip()

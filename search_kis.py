@@ -82,6 +82,7 @@ def select_candidates(
             continue
         candidates.append(
             {
+                "_global_id": global_id,
                 "retrieval_rank": retrieval_rank,
                 "video_id": video_id,
                 "keyframe_no": int(row["keyframe_no"]),
@@ -104,6 +105,43 @@ def select_candidates(
             if len(selected) >= top_k:
                 return selected
     return selected
+
+def protect_signal_rows(
+    rows: list[dict[str, object]], max_protected: int = 4,
+    max_ocr_rank: int = 10,
+) -> list[dict[str, object]]:
+    """Keep the visual winner, then expose a bounded exact-text prefix."""
+    if not rows or max_protected <= 0:
+        return rows
+    first = rows[0]
+    first_key = (str(first["video_id"]), int(first["frame_idx"]))
+    protected: list[dict[str, object]] = []
+    protected_videos: set[str] = set()
+    for row in sorted(
+        rows[1:],
+        key=lambda item: int(item.get("_ocr_rank", max_ocr_rank + 1)),
+    ):
+        ocr_rank = int(row.get("_ocr_rank", max_ocr_rank + 1))
+        video_id = str(row["video_id"])
+        key = (video_id, int(row["frame_idx"]))
+        if ocr_rank > max_ocr_rank or key == first_key or video_id in protected_videos:
+            continue
+        protected.append(row)
+        protected_videos.add(video_id)
+        if len(protected) >= max_protected:
+            break
+    protected_keys = {
+        (str(row["video_id"]), int(row["frame_idx"])) for row in protected
+    }
+    output = [first, *protected]
+    output.extend(
+        row for row in rows[1:]
+        if (str(row["video_id"]), int(row["frame_idx"])) not in protected_keys
+    )
+    for rank, row in enumerate(output, start=1):
+        row["rank"] = rank
+    return output
+
 
 def diversify_ranked_rows(
     rows: list[dict[str, object]], top_k: int,

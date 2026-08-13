@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from retrieval_enhancements import (
-    expand_query, fuse_query_rankings, temporal_neighbor_ranking,
+    expand_query, fuse_query_rankings, qa_retrieval_query, temporal_neighbor_ranking,
 )
 
 
@@ -20,6 +20,22 @@ class RetrievalEnhancementTests(unittest.TestCase):
             "Một người phụ nữ đang chạy xe máy trên đường đông người",
         )
         self.assertIn("người phụ nữ chạy xe máy đường đông người", variants)
+
+    def test_qa_retrieval_query_removes_answer_slot_not_scene(self) -> None:
+        self.assertEqual(
+            qa_retrieval_query(
+                "C\u00f3 bao nhi\u00eau ng\u01b0\u1eddi ch\u00ednh \u0111ang "
+                "\u0111\u1ee9ng tr\u01b0\u1edbc b\u1ea3ng tr\u1eafng v\u00e0 vi\u1ebft b\u00e0i?"
+            ),
+            "ng\u01b0\u1eddi ch\u00ednh \u0111ang \u0111\u1ee9ng tr\u01b0\u1edbc "
+            "b\u1ea3ng tr\u1eafng v\u00e0 vi\u1ebft b\u00e0i",
+        )
+        self.assertEqual(
+            qa_retrieval_query(
+                "Tr\u00ean m\u00e0n h\u00ecnh n\u1ec1n \u0111en, d\u1ea5u X c\u00f3 m\u00e0u g\u00ec?"
+            ),
+            "Tr\u00ean m\u00e0n h\u00ecnh n\u1ec1n \u0111en, d\u1ea5u X",
+        )
 
     def test_query_rrf_keeps_original_dominant(self) -> None:
         ids, _ = fuse_query_rankings([[1, 2, 3], [3, 4, 5]])

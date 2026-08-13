@@ -12,6 +12,23 @@ from typing import Any
 from evaluate_suite import evaluate_suite, load_ground_truth
 
 
+def wait_for_health(base_url: str, timeout: float = 300.0) -> None:
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(
+                f"{base_url.rstrip('/')}/api/health", timeout=5
+            ) as response:
+                health = json.loads(response.read())
+            if health.get("status") == "ready":
+                return
+        except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as error:
+            last_error = error
+        time.sleep(2)
+    raise RuntimeError(f"API did not recover within {timeout:.0f}s") from last_error
+
+
 def call_api(base_url: str, record: dict[str, Any], qa_candidates: int) -> dict[str, Any]:
     payload = {
         "task": record["task"],
@@ -29,13 +46,25 @@ def call_api(base_url: str, record: dict[str, Any], qa_candidates: int) -> dict[
         headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=900) as response:
-            return json.loads(response.read())
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"API failed for {record['query_id']}: {detail}") from error
-
+    for attempt in range(1, 4):
+        try:
+            with urllib.request.urlopen(request, timeout=900) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"API failed for {record['query_id']}: {detail}"
+            ) from error
+        except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
+            if attempt >= 3:
+                raise
+            print(
+                f"API connection lost for {record['query_id']}; "
+                f"waiting for restart ({attempt}/2)",
+                flush=True,
+            )
+            wait_for_health(base_url)
+    raise AssertionError("unreachable")
 
 def result_rows(task: str, results: list[dict[str, Any]]) -> list[list[Any]]:
     if task == "kis":
@@ -79,7 +108,7 @@ def main() -> None:
     parser.add_argument("ground_truth", type=Path)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/gt_predictions"))
     parser.add_argument("--base-url", default="http://127.0.0.1:7860")
-    parser.add_argument("--qa-candidates", type=int, default=5, choices=(5, 8, 10))
+    parser.add_argument("--qa-candidates", type=int, default=10, choices=(5, 8, 10))
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--report", type=Path, default=Path("outputs/ground_truth_benchmark.json"))
     args = parser.parse_args()

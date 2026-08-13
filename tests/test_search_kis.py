@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from search_kis import diversify_ranked_rows, select_candidates
+from search_kis import diversify_ranked_rows, protect_signal_rows, select_candidates
 
 
 class CandidateSelectionTests(unittest.TestCase):
@@ -68,6 +68,21 @@ class CandidateSelectionTests(unittest.TestCase):
              ("L21_V001",20),("L21_V002",50)],
         )
         self.assertEqual([row["rank"] for row in selected], [1,2,3,4,5])
+    def test_protects_bounded_ocr_prefix_after_visual_winner(self) -> None:
+        rows = [
+            {"video_id":"V1","frame_idx":1,"score":.99},
+            {"video_id":"V2","frame_idx":2,"score":.98},
+            {"video_id":"V3","frame_idx":3,"score":.97,"_ocr_rank":2},
+            {"video_id":"V3","frame_idx":4,"score":.96,"_ocr_rank":1},
+            {"video_id":"V4","frame_idx":5,"score":.95,"_ocr_rank":11},
+        ]
+        selected = protect_signal_rows(rows, max_protected=2, max_ocr_rank=10)
+        self.assertEqual(
+            [(row["video_id"], row["frame_idx"]) for row in selected[:3]],
+            [("V1", 1), ("V3", 4), ("V2", 2)],
+        )
+        self.assertEqual([row["rank"] for row in selected], [1,2,3,4,5])
+
     def test_negative_time_gap_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             select_candidates([], np.array([], dtype=np.float32), {}, 1, 1, -1.0)

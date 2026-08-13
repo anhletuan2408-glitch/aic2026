@@ -34,6 +34,21 @@ def normalized_terms(text: str) -> list[str]:
             if len(token) > 1 and token not in _STOPWORDS]
 
 
+def longest_common_token_run(left: list[str], right: list[str]) -> int:
+    if not left or not right:
+        return 0
+    previous = [0] * (len(right) + 1)
+    longest = 0
+    for left_token in left:
+        current = [0] * (len(right) + 1)
+        for index, right_token in enumerate(right, start=1):
+            if left_token == right_token:
+                current[index] = previous[index - 1] + 1
+                longest = max(longest, current[index])
+        previous = current
+    return longest
+
+
 def connect_ocr(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=60.0)
@@ -67,7 +82,8 @@ class OCRSignals:
         expression = fts_query(query)
         if not expression or not self.path.exists():
             return []
-        query_terms = set(normalized_terms(query))
+        ordered_query_terms = normalized_terms(query)
+        query_terms = set(ordered_query_terms)
         with closing(sqlite3.connect(self.path, timeout=10.0)) as connection:
             rows = connection.execute(
                 "SELECT CAST(global_id AS INTEGER),text,bm25(ocr_fts) FROM ocr_fts "
@@ -76,13 +92,15 @@ class OCRSignals:
             ).fetchall()
         ranked = []
         for global_id, text, bm25_score in rows:
-            overlap = len(query_terms.intersection(normalized_terms(str(text))))
+            text_terms = normalized_terms(str(text))
+            overlap = len(query_terms.intersection(text_terms))
             coverage = overlap / max(len(query_terms), 1)
-            required = 1.0 if len(query_terms) <= 2 else 0.6
-            if coverage >= required:
-                ranked.append((int(global_id), coverage, float(bm25_score)))
-        ranked.sort(key=lambda row: (-row[1], row[2]))
-        return [global_id for global_id, _, _ in ranked[:limit]]
+            phrase_run = longest_common_token_run(ordered_query_terms, text_terms)
+            required_overlap = len(query_terms) if len(query_terms) <= 2 else 2
+            if overlap >= required_overlap:
+                ranked.append((int(global_id), phrase_run, overlap, coverage, float(bm25_score)))
+        ranked.sort(key=lambda row: (-row[1], row[4], -row[2], -row[3]))
+        return [global_id for global_id, _, _, _, _ in ranked[:limit]]
 
     def count(self) -> int:
         if not self.path.exists():

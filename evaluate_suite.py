@@ -51,7 +51,7 @@ def score_record(record: dict[str, Any], prediction_dir: Path) -> dict[str, Any]
     else:
         scores = [0.0] * max(TOP_THRESHOLDS)
     top, score = final_score(scores)
-    return {
+    result = {
         "query_id": record["query_id"],
         "task": record["task"],
         "query": record["query"],
@@ -60,6 +60,17 @@ def score_record(record: dict[str, Any], prediction_dir: Path) -> dict[str, Any]
         **{f"r@{k}": top[k] for k in TOP_THRESHOLDS},
         "final_score": score,
     }
+    if record["task"] == "qa":
+        frame_scores = (
+            evaluate_kis([[row[0], row[1]] for row in rows], record)
+            if prediction.exists() else [0.0] * max(TOP_THRESHOLDS)
+        )
+        frame_top, frame_score = final_score(frame_scores)
+        result.update(
+            {f"frame_r@{k}": frame_top[k] for k in TOP_THRESHOLDS}
+        )
+        result["frame_final_score"] = frame_score
+    return result
 
 
 def aggregate(rows: list[dict[str, Any]]) -> dict[str, float]:
@@ -75,11 +86,24 @@ def evaluate_suite(ground_truth: Path, prediction_dir: Path) -> dict[str, Any]:
         for task in sorted(TASKS)
         if any(row["task"] == task for row in details)
     }
+    qa_details = [row for row in details if row["task"] == "qa"]
+    diagnostics = {}
+    if qa_details:
+        diagnostics["qa_frame"] = {
+            **{
+                f"r@{k}": sum(float(row[f"frame_r@{k}"]) for row in qa_details)
+                / len(qa_details)
+                for k in TOP_THRESHOLDS
+            },
+            "final_score": sum(float(row["frame_final_score"]) for row in qa_details)
+            / len(qa_details),
+        }
     return {
         "queries": len(details),
         "missing_predictions": sum(bool(row["missing"]) for row in details),
         "overall": aggregate(details),
         "tasks": by_task,
+        "diagnostics": diagnostics,
         "details": details,
     }
 

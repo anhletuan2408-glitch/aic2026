@@ -11,6 +11,26 @@ VIETNAMESE_FILLERS = {
 }
 
 
+_QA_QUESTION_PATTERNS = (
+    r"\b(?:c\u00f3\s+)?bao\s+nhi\u00eau\b",
+    r"\b(?:c\u00f3\s+)?m\u00e0u(?:\s+s\u1eafc)?\s+(?:g\u00ec|n\u00e0o)\b",
+    r"\bhow\s+many\b",
+    r"\b(?:g\u00ec|n\u00e0o|ai)\b",
+    r"\b(?:what|which|who)\b",
+)
+
+
+def qa_retrieval_query(question: str) -> str:
+    original = " ".join(question.split())
+    if not original:
+        raise ValueError("Question must not be empty")
+    cleaned = original
+    for pattern in _QA_QUESTION_PATTERNS:
+        cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
+    cleaned = " ".join(cleaned.strip(" ,.;:!?").split())
+    return cleaned if len(cleaned.split()) >= 3 else original
+
+
 def expand_query(query: str, max_variants: int = 3) -> list[str]:
     original = " ".join(query.split())
     if not original:

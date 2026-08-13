@@ -19,6 +19,7 @@ class AssistantServiceTests(TestCase):
         self.engine = FakeEngine()
         self.service = AssistantService(self.engine, object())
 
+
     def test_kis_retrieval_and_invalid_task(self):
         kis = self.service.run("kis", "xe may", top_k=1, quality=False)
         self.assertEqual((kis["task"], kis["count"]), ("kis", 1))
@@ -59,6 +60,29 @@ class AssistantServiceTests(TestCase):
                                              "keyframe_no":12,"answer":"xe may"}])
         image.close.assert_called_once()
         self.assertEqual(self.engine.model, "restored")
+
+    def test_qa_retrieves_scene_and_original_question(self):
+        self.engine.search = Mock(side_effect=[
+            [{"video_id":"L21_V001","frame_idx":345,"keyframe_no":12,"score":.5}],
+            [{"video_id":"L21_V002","frame_idx":678,"keyframe_no":13,"score":.4}],
+        ])
+        with patch.object(
+            self.service, "_answer_selected_locked",
+            return_value=[{"_source_index":0,"answer":"1"}],
+        ):
+            self.service.run(
+                "qa",
+                "C\u00f3 bao nhi\u00eau ng\u01b0\u1eddi \u0111\u1ee9ng tr\u01b0\u1edbc b\u1ea3ng tr\u1eafng?",
+                qa_candidates=1,
+            )
+        self.assertEqual(self.engine.search.call_count, 2)
+        self.assertNotEqual(
+            self.engine.search.call_args_list[0].args[0],
+            self.engine.search.call_args_list[1].args[0],
+        )
+        for call in self.engine.search.call_args_list:
+            self.assertFalse(call.args[-2])
+            self.assertFalse(call.args[-1])
 
     def test_answer_requires_selected_frames(self):
         with self.assertRaises(ValueError):
