@@ -3,11 +3,22 @@ from __future__ import annotations
 import unittest
 
 from retrieval_enhancements import (
-    expand_query, fuse_query_rankings, qa_retrieval_query, temporal_neighbor_ranking,
+    expand_query, fuse_query_rankings, qa_answer_hypothesis_queries,
+    qa_hypothesis_priority_depth,
+    qa_retrieval_query, temporal_neighbor_ranking,
 )
 
 
 class RetrievalEnhancementTests(unittest.TestCase):
+    def test_qa_answer_hypotheses_cover_common_answer_types(self) -> None:
+        colors = qa_answer_hypothesis_queries("Chiếc áo có màu gì?")
+        counts = qa_answer_hypothesis_queries("Có bao nhiêu người trước bảng?")
+        sports = qa_answer_hypothesis_queries("Họ thi đấu môn gì?")
+        self.assertTrue(any("màu đỏ red" in item for item in colors))
+        self.assertTrue(any("một người one person" in item for item in counts))
+        self.assertTrue(any("đua xe đạp cycling" in item for item in sports))
+        self.assertEqual(qa_hypothesis_priority_depth("Có bao nhiêu người?"), 90)
+        self.assertEqual(qa_hypothesis_priority_depth("Màu gì?"), 0)
     def test_short_query_is_not_diluted(self) -> None:
         self.assertEqual(expand_query("xe máy"), ["xe máy"])
 

@@ -9,11 +9,16 @@ import torch
 from sentence_transformers import SentenceTransformer
 
 from qna_search import (
-    QwenVLAnswerer, context_images, expand_qa_context_rows,
+    QwenVLAnswerer, compose_qa_hypothesis_candidates, context_images,
+    expand_qa_context_rows,
     fuse_qa_candidate_rows, rank_qa_answers,
 )
-from retrieval_enhancements import qa_retrieval_query
+from retrieval_enhancements import (
+    qa_answer_hypothesis_queries, qa_hypothesis_priority_depth,
+    qa_retrieval_query,
+)
 from rerank import Siglip2Reranker
+from search_kis import diversify_ranked_rows
 from trake_search import search_trake, split_events
 
 
@@ -93,6 +98,17 @@ class AssistantService:
                 question, 100, 10000, 5, 1.5, False, False, False
             )
             rows = fuse_qa_candidate_rows(rows, original_rows)
+        hypothesis_rankings = [
+            self.engine.search(
+                variant, 100, 10000, 5, 1.5, False, False, False
+            )
+            for variant in qa_answer_hypothesis_queries(question)
+        ]
+        if hypothesis_rankings:
+            rows = compose_qa_hypothesis_candidates(
+                rows, hypothesis_rankings, [],
+                first_hypothesis_depth=qa_hypothesis_priority_depth(question),
+            )
         return rows
     def _qa_submission_rows(
         self, rows: list[dict[str, Any]], candidates: int

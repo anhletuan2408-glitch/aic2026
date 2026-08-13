@@ -62,9 +62,8 @@ class AssistantServiceTests(TestCase):
         self.assertEqual(self.engine.model, "restored")
 
     def test_qa_retrieves_scene_and_original_question(self):
-        self.engine.search = Mock(side_effect=[
-            [{"video_id":"L21_V001","frame_idx":345,"keyframe_no":12,"score":.5}],
-            [{"video_id":"L21_V002","frame_idx":678,"keyframe_no":13,"score":.4}],
+        self.engine.search = Mock(return_value=[
+            {"video_id":"L21_V001","frame_idx":345,"keyframe_no":12,"score":.5}
         ])
         with patch.object(
             self.service, "_answer_selected_locked",
@@ -75,7 +74,7 @@ class AssistantServiceTests(TestCase):
                 "C\u00f3 bao nhi\u00eau ng\u01b0\u1eddi \u0111\u1ee9ng tr\u01b0\u1edbc b\u1ea3ng tr\u1eafng?",
                 qa_candidates=1,
             )
-        self.assertEqual(self.engine.search.call_count, 2)
+        self.assertEqual(self.engine.search.call_count, 8)
         self.assertNotEqual(
             self.engine.search.call_args_list[0].args[0],
             self.engine.search.call_args_list[1].args[0],

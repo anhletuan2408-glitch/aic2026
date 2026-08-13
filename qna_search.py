@@ -64,6 +64,40 @@ def fuse_qa_candidate_rows(
     return [{**rows[key], "rank": rank} for rank, key in enumerate(ordered, start=1)]
 
 
+def compose_qa_hypothesis_candidates(
+    primary: list[dict[str, object]],
+    hypothesis_rankings: list[list[dict[str, object]]],
+    reranked_union: list[dict[str, object]],
+    limit: int = 100,
+    primary_prefix: int = 3,
+    first_hypothesis_depth: int = 0,
+) -> list[dict[str, object]]:
+    """Protect visual winners and expose one candidate per possible answer."""
+    output: list[dict[str, object]] = []
+    seen: set[tuple[str, int]] = set()
+
+    def add(row: dict[str, object]) -> None:
+        key = (str(row["video_id"]), int(row["frame_idx"]))
+        if key not in seen and len(output) < limit:
+            seen.add(key)
+            output.append(dict(row))
+
+    for row in primary[:primary_prefix]:
+        add(row)
+    for ranking in hypothesis_rankings:
+        if ranking:
+            add(ranking[0])
+    if hypothesis_rankings and first_hypothesis_depth > 0:
+        for row in hypothesis_rankings[0][:first_hypothesis_depth]:
+            add(row)
+    for ranking in (reranked_union, primary, *hypothesis_rankings):
+        for row in ranking:
+            add(row)
+    for rank, row in enumerate(output, start=1):
+        row["rank"] = rank
+    return output
+
+
 def expand_qa_context_rows(
     rows: list[dict[str, object]], metadata_path: Path,
     selected_count: int, radius: int = 1, limit: int = 100,

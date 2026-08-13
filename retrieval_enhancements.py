@@ -31,6 +31,43 @@ def qa_retrieval_query(question: str) -> str:
     return cleaned if len(cleaned.split()) >= 3 else original
 
 
+def qa_hypothesis_priority_depth(question: str) -> int:
+    """Reserve recall budget for the dominant count hypothesis."""
+    return 90 if re.search(r"\bbao nhiêu\b|\bhow many\b", question.casefold()) else 0
+
+
+def qa_answer_hypothesis_queries(question: str) -> list[str]:
+    """Create broad answer-slot hypotheses for candidate recall, not final answers."""
+    scene = qa_retrieval_query(question)
+    folded = question.casefold()
+    groups: list[list[str]] = []
+    if re.search(r"\bmàu(?:\s+sắc)?\s+(?:gì|nào)\b|\bwhat color\b", folded):
+        groups.append([
+            "màu đỏ red", "màu xanh dương blue", "màu xanh lá green",
+            "màu vàng yellow", "màu đen black", "màu trắng white",
+            "màu hồng pink", "màu cam orange", "màu tím purple",
+        ])
+    if re.search(r"\bbao nhiêu\b|\bhow many\b", folded):
+        groups.append([
+            "một người one person", "hai người two people",
+            "ba người three people", "bốn người four people",
+            "năm người five people", "nhiều người many people",
+        ])
+    if re.search(r"đội (?:gì|vật gì)|trên đầu|headwear|wearing on .*head", folded):
+        groups.append([
+            "đội mũ cap hat", "đội mũ bảo hiểm helmet",
+            "đội khăn headscarf", "đội nón lá conical hat",
+        ])
+    if re.search(r"môn (?:gì|nào)|môn thể thao|what sport", folded):
+        groups.append([
+            "đua xe đạp cycling", "bóng đá football", "chạy bộ running",
+            "bơi swimming", "quần vợt tennis", "bóng rổ basketball",
+        ])
+    if re.search(r"tên ứng viên|ứng cử viên|candidate(?:'s)? name", folded):
+        groups.append(["Donald Trump", "Joe Biden", "Kamala Harris"])
+    return [f"{scene} {answer}" for group in groups for answer in group]
+
+
 def expand_query(query: str, max_variants: int = 3) -> list[str]:
     original = " ".join(query.split())
     if not original:

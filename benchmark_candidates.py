@@ -130,7 +130,7 @@ def main() -> None:
     args.report.write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    print(json.dumps(report, ensure_ascii=True, indent=2))
 
 
 if __name__ == "__main__":

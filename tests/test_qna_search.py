@@ -7,12 +7,26 @@ from contextlib import closing
 from pathlib import Path
 
 from qna_search import (
-    clean_answer, expand_qa_context_rows, fuse_qa_candidate_rows,
+    clean_answer, compose_qa_hypothesis_candidates, expand_qa_context_rows,
+    fuse_qa_candidate_rows,
     rank_qa_answers,
 )
 
 
 class QnaSearchTests(unittest.TestCase):
+    def test_hypothesis_composition_protects_visual_prefix_and_heads(self) -> None:
+        def row(video: str, frame: int) -> dict[str, object]:
+            return {"video_id": video, "frame_idx": frame}
+        primary = [row("P", frame) for frame in range(1, 6)]
+        hypotheses = [[row("H1", 1), row("H1", 2)], [row("H2", 1)]]
+        reranked = [row("R", 1), row("P", 4), row("H1", 2)]
+        output = compose_qa_hypothesis_candidates(primary, hypotheses, reranked, limit=8)
+        self.assertEqual(
+            [(item["video_id"], item["frame_idx"]) for item in output],
+            [("P", 1), ("P", 2), ("P", 3), ("H1", 1),
+             ("H2", 1), ("R", 1), ("P", 4), ("H1", 2)],
+        )
+        self.assertEqual([item["rank"] for item in output], list(range(1, 9)))
 
     def test_context_expansion_preserves_prefix_then_adds_neighbors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
