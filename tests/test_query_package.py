@@ -74,6 +74,18 @@ class QueryPackageTests(unittest.TestCase):
                 "L22_V031,28372,xe máy\r\n",
             )
 
+    def test_qa_csv_preserves_whitespace_and_escapes_special_characters(self) -> None:
+        self.package.import_zip(package_zip({"query-1-qa.txt": "Người đó nói gì?"}))
+        answer = ' Anh ấy nói "Xin chào", rồi rời đi '
+        self.package.save("query-1-qa.txt", [
+            {"video_id": "L21_V001", "frame_idx": 1234, "answer": answer}
+        ])
+        with ZipFile(io.BytesIO(self.package.export_zip())) as archive:
+            content = archive.read("submission/query-1-qa.csv").decode("utf-8")
+        self.assertEqual(
+            content,
+            'L21_V001,1234," Anh ấy nói ""Xin chào"", rồi rời đi "\r\n',
+        )
     def test_saved_progress_survives_restart(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)

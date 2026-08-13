@@ -4,7 +4,9 @@ import argparse
 import gc
 import io
 import re
+import sqlite3
 from collections import Counter
+from contextlib import closing
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -13,6 +15,7 @@ from PIL import Image
 from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2_5_VLForConditionalGeneration
 
 from submission import QAAnswer, write_qa_submission
+from text_encoding import repair_utf8_mojibake
 from web_app import KeyframeStore
 if TYPE_CHECKING:
     from web_app_vi import MultilingualFaissEngine
@@ -24,7 +27,7 @@ QWEN_VL_MODEL = "Qwen/Qwen2.5-VL-3B-Instruct"
 
 
 def clean_answer(value: str) -> str:
-    value = value.strip().splitlines()[0].strip()
+    value = repair_utf8_mojibake(value).strip().splitlines()[0].strip()
     value = re.sub(r"^(?:answer|trả lời)\s*:\s*", "", value, flags=re.IGNORECASE)
     value = value.strip().strip('"').strip()
     if value.endswith((".", "!", "?")):
@@ -61,6 +64,54 @@ def fuse_qa_candidate_rows(
     return [{**rows[key], "rank": rank} for rank, key in enumerate(ordered, start=1)]
 
 
+def expand_qa_context_rows(
+    rows: list[dict[str, object]], metadata_path: Path,
+    selected_count: int, radius: int = 1, limit: int = 100,
+) -> list[dict[str, object]]:
+    """Add frames Qwen actually saw, while preserving the selected Top-k prefix."""
+    if not rows or selected_count <= 0 or radius <= 0:
+        return rows[:limit]
+    prefix = rows[: min(selected_count, len(rows), limit)]
+    seen = {
+        (str(row["video_id"]), int(row["frame_idx"])) for row in prefix
+    }
+    neighbors: list[dict[str, object]] = []
+    with closing(sqlite3.connect(metadata_path)) as connection:
+        for source_rank, row in enumerate(prefix, start=1):
+            video_id = str(row["video_id"])
+            keyframe_no = int(row["keyframe_no"])
+            records = connection.execute(
+                "SELECT video_id,keyframe_no,frame_idx,pts_time FROM keyframes "
+                "WHERE video_id=? AND keyframe_no BETWEEN ? AND ? "
+                "ORDER BY ABS(keyframe_no-?),keyframe_no",
+                (video_id, keyframe_no - radius, keyframe_no + radius, keyframe_no),
+            ).fetchall()
+            for neighbor_video, neighbor_no, frame_idx, pts_time in records:
+                key = (str(neighbor_video), int(frame_idx))
+                if key in seen:
+                    continue
+                seen.add(key)
+                neighbors.append({
+                    **row,
+                    "video_id": str(neighbor_video),
+                    "keyframe_no": int(neighbor_no),
+                    "frame_idx": int(frame_idx),
+                    "pts_time": float(pts_time),
+                    "context_of_rank": source_rank,
+                })
+    output = [*prefix, *neighbors]
+    for row in rows[len(prefix):]:
+        key = (str(row["video_id"]), int(row["frame_idx"]))
+        if key not in seen:
+            seen.add(key)
+            output.append(row)
+        if len(output) >= limit:
+            break
+    output = output[:limit]
+    for rank, row in enumerate(output, start=1):
+        row["rank"] = rank
+    return output
+
 def rank_qa_answers(
     rows: list[dict[str, object]],
     predictions: list[tuple[int, str]],
@@ -84,6 +135,11 @@ def rank_qa_answers(
 
     for index, answer in cleaned:
         add(rows[index], answer)
+    answer_by_source = {index + 1: answer for index, answer in cleaned}
+    for row in rows:
+        source_rank = int(row.get("context_of_rank", 0))
+        if source_rank in answer_by_source:
+            add(row, answer_by_source[source_rank])
     for row in rows:
         for answer in answers:
             add(row, answer)

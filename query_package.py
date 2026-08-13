@@ -9,6 +9,7 @@ from pathlib import Path
 from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 
 from submission import MAX_ANSWERS, validate_video_id
+from text_encoding import repair_utf8_mojibake
 from trake_search import split_events
 
 
@@ -43,7 +44,9 @@ class QueryPackage:
                     suggested_task = match.group(1).casefold() if match else "kis"
                     if entry.file_size > 64 * 1024:
                         raise ValueError(f"Query is too large: {entry.filename}")
-                    text = archive.read(entry).decode("utf-8-sig").strip()
+                    text = repair_utf8_mojibake(
+                        archive.read(entry).decode("utf-8-sig")
+                    ).strip()
                     if not text:
                         raise ValueError(f"Empty query: {entry.filename}")
                     found[entry.filename] = {
@@ -140,7 +143,7 @@ class QueryPackage:
                 if frame_idx < 0:
                     raise ValueError("frame_idx must be non-negative")
                 if task == "qa":
-                    answer = str(row.get("answer", ""))
+                    answer = repair_utf8_mojibake(str(row.get("answer", "")))
                     if not answer or len(answer) > 100:
                         raise ValueError("Q&A answer must contain 1-100 characters")
                     writer.writerow([video_id, frame_idx, answer])

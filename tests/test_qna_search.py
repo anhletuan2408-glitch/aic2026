@@ -1,14 +1,43 @@
 from __future__ import annotations
 
+import sqlite3
+import tempfile
 import unittest
+from contextlib import closing
+from pathlib import Path
 
 from qna_search import (
-    clean_answer, fuse_qa_candidate_rows, rank_qa_answers,
+    clean_answer, expand_qa_context_rows, fuse_qa_candidate_rows,
+    rank_qa_answers,
 )
 
 
 class QnaSearchTests(unittest.TestCase):
 
+    def test_context_expansion_preserves_prefix_then_adds_neighbors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "metadata.sqlite3"
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute(
+                    "CREATE TABLE keyframes (video_id TEXT,keyframe_no INTEGER,"
+                    "frame_idx INTEGER,pts_time REAL)"
+                )
+                connection.executemany(
+                    "INSERT INTO keyframes VALUES (?,?,?,?)",
+                    [("V", 1, 100, 1.0), ("V", 2, 200, 2.0),
+                     ("V", 3, 300, 3.0), ("W", 1, 400, 4.0)],
+                )
+                connection.commit()
+            rows = [
+                {"video_id":"V", "keyframe_no":2, "frame_idx":200, "score":.9},
+                {"video_id":"W", "keyframe_no":1, "frame_idx":400, "score":.8},
+            ]
+            expanded = expand_qa_context_rows(rows, path, selected_count=1)
+            self.assertEqual(
+                [(row["video_id"], row["frame_idx"]) for row in expanded],
+                [("V", 200), ("V", 100), ("V", 300), ("W", 400)],
+            )
+            self.assertEqual([row["rank"] for row in expanded], [1, 2, 3, 4])
     def test_clean_answer_removes_wrapper(self) -> None:
         self.assertEqual(clean_answer('Answer: "Five people."'), "Five people")
 
@@ -61,6 +90,20 @@ class QnaSearchTests(unittest.TestCase):
             [(item.video_id, item.frame_id, item.answer) for item in answers],
         )
 
+    def test_context_frame_inherits_its_source_answer_before_consensus(self) -> None:
+        rows = [
+            {"video_id":"V", "frame_idx":100},
+            {"video_id":"W", "frame_idx":200},
+            {"video_id":"V", "frame_idx":110, "context_of_rank":1},
+        ]
+        answers = rank_qa_answers(rows, [(0, "red"), (1, "blue")])
+        triples = [
+            (item.video_id, item.frame_id, item.answer) for item in answers
+        ]
+        self.assertLess(
+            triples.index(("V", 110, "red")),
+            triples.index(("V", 110, "blue")),
+        )
 
 if __name__ == "__main__":
     unittest.main()

@@ -247,6 +247,9 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
             raise ValueError("Question must not be empty")
         with assistant.lock:
             rows = assistant._qa_candidate_rows(question)
+            rows = assistant._qa_submission_rows(
+                rows, int(payload.get("qa_candidates", 10))
+            )
         return jsonify({"count": len(rows), "results": rows})
     @app.post("/api/qa/answer")
     def api_qa_answer() -> Response:

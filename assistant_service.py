@@ -9,7 +9,8 @@ import torch
 from sentence_transformers import SentenceTransformer
 
 from qna_search import (
-    QwenVLAnswerer, context_images, fuse_qa_candidate_rows, rank_qa_answers,
+    QwenVLAnswerer, context_images, expand_qa_context_rows,
+    fuse_qa_candidate_rows, rank_qa_answers,
 )
 from retrieval_enhancements import qa_retrieval_query
 from rerank import Siglip2Reranker
@@ -60,6 +61,7 @@ class AssistantService:
         if candidates < 1 or candidates > 10:
             raise ValueError("qa_candidates must be in [1, 10]")
         rows = self._qa_candidate_rows(question)
+        submission_rows = self._qa_submission_rows(rows, candidates)
         selections = [
             {"video_id": row["video_id"], "frame_idx": row["frame_idx"],
              "keyframe_no": row["keyframe_no"], "_source_index": index}
@@ -67,12 +69,12 @@ class AssistantService:
         ]
         predicted = self._answer_selected_locked(question, selections)
         answers = rank_qa_answers(
-            rows,
+            submission_rows,
             [(int(row.pop("_source_index")), str(row["answer"])) for row in predicted],
         )
         keyframes = {
             (str(row["video_id"]), int(row["frame_idx"])): int(row["keyframe_no"])
-            for row in rows
+            for row in submission_rows
         }
         return [
             {"video_id": answer.video_id, "frame_idx": answer.frame_id,
@@ -92,6 +94,13 @@ class AssistantService:
             )
             rows = fuse_qa_candidate_rows(rows, original_rows)
         return rows
+    def _qa_submission_rows(
+        self, rows: list[dict[str, Any]], candidates: int
+    ) -> list[dict[str, Any]]:
+        metadata_path = getattr(self.engine, "metadata_path", None)
+        if metadata_path is None:
+            return rows
+        return expand_qa_context_rows(rows, metadata_path, candidates)
     def answer_selected(self, question: str,
                         selections: list[dict[str, Any]]) -> dict[str, Any]:
         question = question.strip()
