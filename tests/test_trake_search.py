@@ -49,6 +49,30 @@ class TrakeSearchTests(unittest.TestCase):
         ))
 
 
+    def test_widest_gap_variant_follows_best_path_for_priority_video(self) -> None:
+        rows = [
+            [
+                {"video_id": "A", "frame_idx": 100, "pts_time": 0.0, "score": .9},
+                {"video_id": "B", "frame_idx": 100, "pts_time": 0.0, "score": .4},
+            ],
+            [
+                {"video_id": "A", "frame_idx": 200, "pts_time": 10.0, "score": .95},
+                {"video_id": "A", "frame_idx": 500, "pts_time": 400.0, "score": .7},
+                {"video_id": "B", "frame_idx": 200, "pts_time": 200.0, "score": .4},
+            ],
+            [
+                {"video_id": "A", "frame_idx": 300, "pts_time": 20.0, "score": .95},
+                {"video_id": "A", "frame_idx": 900, "pts_time": 800.0, "score": .7},
+                {"video_id": "B", "frame_idx": 300, "pts_time": 400.0, "score": .4},
+            ],
+        ]
+        aligned = align_event_candidates(
+            rows, gap_profiles=(0.0, 100.0), priority_videos=2,
+        )
+        self.assertEqual(aligned[0][1].frame_ids, (100, 200, 300))
+        self.assertEqual(aligned[1][1].frame_ids, (100, 500, 900))
+
+
     def test_conditioned_pass_searches_all_frames_inside_joint_video(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             metadata = Path(directory) / "metadata.sqlite3"

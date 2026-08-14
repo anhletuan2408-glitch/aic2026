@@ -53,10 +53,12 @@ def split_events(text: str) -> list[str]:
 
 def align_event_candidates(
     event_rows: list[list[dict[str, object]]],
-    beam_width: int = 8,
+    beam_width: int = 64,
     max_answers: int = 100,
+    gap_profiles: tuple[float, ...] = (0.0, 15.0, 45.0, 120.0, 240.0),
+    priority_videos: int = 5,
 ) -> list[tuple[float, TRAKEAnswer]]:
-    """Return k-best ordered event paths using dynamic programming per video."""
+    """Return diverse k-best ordered paths using dynamic programming per video."""
     by_event: list[dict[str, list[EventCandidate]]] = []
     for rows in event_rows:
         grouped: dict[str, list[EventCandidate]] = {}
@@ -74,8 +76,9 @@ def align_event_candidates(
     common_videos = set(by_event[0])
     for grouped in by_event[1:]:
         common_videos.intersection_update(grouped)
-    aligned: list[tuple[float, TRAKEAnswer]] = []
-    for video_id in common_videos:
+    def completed_paths(
+        video_id: str, minimum_gap: float,
+    ) -> list[tuple[float, TRAKEAnswer]]:
         states: list[tuple[EventCandidate, float, tuple[int, ...]]] = [
             (candidate, candidate.score, (candidate.frame_idx,))
             for candidate in by_event[0][video_id]
@@ -88,20 +91,77 @@ def align_event_candidates(
                     if candidate.frame_idx <= previous.frame_idx:
                         continue
                     gap = max(0.0, candidate.pts_time - previous.pts_time)
+                    if gap < minimum_gap:
+                        continue
                     distinct_bonus = min(gap, 10.0) * 0.0005
-                    extensions.append((candidate, score + candidate.score + distinct_bonus,
-                                       (*frames, candidate.frame_idx)))
+                    extensions.append((
+                        candidate, score + candidate.score + distinct_bonus,
+                        (*frames, candidate.frame_idx),
+                    ))
                 extensions.sort(key=lambda item: item[1], reverse=True)
                 next_states.extend(extensions[:beam_width])
             states = next_states
             if not states:
                 break
-        aligned.extend(
+        completed = [
             (score, TRAKEAnswer(video_id, frames))
             for _, score, frames in states if len(frames) == len(event_rows)
-        )
+        ]
+        completed.sort(key=lambda item: item[0], reverse=True)
+        return completed
+
+    aligned: list[tuple[float, TRAKEAnswer]] = []
+    profile_paths: dict[str, list[tuple[float, TRAKEAnswer]]] = {}
+    best_by_video: dict[str, float] = {}
+    for video_id in common_videos:
+        completed = completed_paths(video_id, gap_profiles[0])
+        if not completed:
+            continue
+        aligned.extend(completed)
+        profile_paths[video_id] = [completed[0]]
+        best_by_video[video_id] = completed[0][0]
+
+    priority = sorted(
+        best_by_video, key=best_by_video.__getitem__, reverse=True,
+    )[:priority_videos]
+    for video_id in priority:
+        for minimum_gap in gap_profiles[1:]:
+            completed = completed_paths(video_id, minimum_gap)
+            if completed:
+                profile_paths[video_id].append(completed[0])
     aligned.sort(key=lambda item: item[0], reverse=True)
-    return aligned[:max_answers]
+    output: list[tuple[float, TRAKEAnswer]] = []
+    seen_paths: set[tuple[str, tuple[int, ...]]] = set()
+
+    def append_unique(item: tuple[float, TRAKEAnswer]) -> None:
+        key = (item[1].video_id, item[1].frame_ids)
+        if key not in seen_paths and len(output) < max_answers:
+            seen_paths.add(key)
+            output.append(item)
+
+    for video_id in priority:
+        variants = profile_paths[video_id]
+        append_unique(variants[0])
+        if len(variants) > 1:
+            append_unique(variants[-1])
+    for profile_index in range(1, max(1, len(gap_profiles) - 1)):
+        for video_id in priority:
+            variants = profile_paths[video_id]
+            if profile_index < len(variants) - 1:
+                append_unique(variants[profile_index])
+
+    seen_videos = {item[1].video_id for item in output}
+    for item in aligned:
+        if item[1].video_id not in seen_videos:
+            seen_videos.add(item[1].video_id)
+            append_unique(item)
+        if len(seen_videos) >= min(50, len(best_by_video)):
+            break
+    for item in aligned:
+        append_unique(item)
+    return output[:max_answers]
+
+
 def joint_video_candidates(
     event_rows: list[list[dict[str, object]]], limit: int = 80,
 ) -> list[str]:
@@ -132,6 +192,7 @@ def add_video_conditioned_candidates(
     event_rows: list[list[dict[str, object]]],
     video_ids: list[str],
     per_video: int,
+    min_time_gap: float = 20.0,
 ) -> None:
     """Search every frame in jointly supported videos, then merge per-event rows."""
     if not video_ids:
@@ -158,8 +219,18 @@ def add_video_conditioned_candidates(
         scores = np.asarray(event_vectors @ frame_vectors.T, dtype=np.float32)
         count = min(per_video, len(video_records))
         for event_index, event_scores in enumerate(scores):
-            top = np.argsort(event_scores)[-count:][::-1]
-            for index in top:
+            selected: list[int] = []
+            for index in np.argsort(event_scores)[::-1]:
+                pts_time = video_records[int(index)][2]
+                if any(
+                    abs(pts_time - video_records[other][2]) < min_time_gap
+                    for other in selected
+                ):
+                    continue
+                selected.append(int(index))
+                if len(selected) >= count:
+                    break
+            for index in selected:
                 _, frame_idx, pts_time = video_records[int(index)]
                 additions[event_index].append({
                     "video_id": video_id,
@@ -185,7 +256,7 @@ def search_trake(
     engine: MultilingualFaissEngine,
     events: list[str],
     candidate_k: int = 10000,
-    per_video: int = 25,
+    per_video: int = 64,
 ) -> list[TRAKEAnswer]:
     vectors = engine.encode_many(events)
     similarities, ids = engine.index.search(vectors, min(candidate_k, engine.index.ntotal))
