@@ -1,6 +1,7 @@
 from __future__ import annotations
 import argparse
 import io
+import json
 import threading
 import time
 from pathlib import Path
@@ -26,6 +27,34 @@ from ground_truth_store import GroundTruthStore
 
 MODEL_NAME = "sentence-transformers/clip-ViT-B-32-multilingual-v1"
 
+
+def load_siglip2_index(index_dir: Path, expected_frames: int,
+                        model_name: str) -> object | None:
+    directory = index_dir / "siglip2"
+    index_path = directory / "keyframes.faiss"
+    manifest_path = directory / "manifest.json"
+    if not index_path.exists() and not manifest_path.exists():
+        return None
+    if not manifest_path.exists():
+        raise ValueError("SigLIP2 keyframes.faiss is missing manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if str(manifest.get("model")) != model_name:
+        raise ValueError("SigLIP2 index model does not match the configured reranker")
+    frames = int(manifest.get("frames", -1))
+    completed = int(manifest.get("completed", -1))
+    indexed = int(manifest.get("index_frames", -1))
+    if completed < frames and indexed == 0:
+        return None
+    if not index_path.exists():
+        raise ValueError("Completed SigLIP2 manifest is missing keyframes.faiss")
+    if frames != expected_frames or completed != frames or indexed != frames:
+        raise ValueError("SigLIP2 index is partial or does not match the base index")
+    index = faiss.read_index(str(index_path))
+    if index.ntotal != expected_frames or index.d != int(manifest["dimension"]):
+        raise ValueError("SigLIP2 FAISS dimensions/count do not match its manifest")
+    return index
+
+
 class MultilingualFaissEngine:
     def __init__(self, index_dir: Path, device: str = "auto",
                  hybrid_dir: Path | None = None, reranker: object | None = None,
@@ -46,6 +75,10 @@ class MultilingualFaissEngine:
         ocr_path = index_dir / "ocr.sqlite3"
         self.ocr = OCRSignals(ocr_path) if ocr_path.exists() else None
         self.reranker = reranker
+        self.siglip2_index = (
+            load_siglip2_index(index_dir, self.index.ntotal, reranker.model_name)
+            if reranker is not None else None
+        )
         self.query_ensemble = query_ensemble
 
     def encode(self, query: str) -> np.ndarray:
@@ -80,6 +113,13 @@ class MultilingualFaissEngine:
         ranked_ids, ranked_scores = fuse_query_rankings(
             rankings, limit=candidate_k
         )
+        if self.siglip2_index is not None and self.reranker is not None and quality:
+            siglip_vector = self.reranker.encode_text(query)
+            _, siglip_values = self.siglip2_index.search(siglip_vector, candidate_k)
+            siglip_ids = [int(value) for value in siglip_values[0] if value >= 0]
+            ranked_ids, ranked_scores = fuse_query_rankings(
+                [ranked_ids, siglip_ids], weights=[1.0, 1.0], limit=candidate_k
+            )
         top_labels: list[str] = []
         if self.hybrid is not None and use_hybrid:
             text_vector = self.hybrid.encode(query)
@@ -186,6 +226,9 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
             "ocr_frames": (getattr(search_engine, "ocr", None).count()
                            if getattr(search_engine, "ocr", None) is not None else 0),
             "query_ensemble": getattr(search_engine, "query_ensemble", False),
+            "siglip2_vectors": int(getattr(
+                getattr(search_engine, "siglip2_index", None), "ntotal", 0
+            )),
             "reranker": (
                 getattr(search_engine.reranker, "model_name", SIGLIP2_MODEL)
                 if getattr(search_engine, "reranker", None) else None
@@ -220,6 +263,8 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
                  + "clip + objects + metadata"
                  + (" + ocr" if getattr(search_engine, "ocr", None) else "")
                  + " -> rrf"
+                 + (" + siglip2-global" if use_quality and getattr(
+                     search_engine, "siglip2_index", None) is not None else "")
                  + (" -> siglip2" if use_quality else ""))
                 if getattr(search_engine, "hybrid", None) is not None
                 else "multilingual-clip -> faiss -> diversify"

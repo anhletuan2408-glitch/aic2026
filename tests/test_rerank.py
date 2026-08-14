@@ -1,11 +1,35 @@
 import unittest
+import threading
 
 import numpy as np
+import torch
 
-from rerank import RerankConfig, fuse_rerank_scores
+from rerank import RerankConfig, Siglip2Reranker, fuse_rerank_scores
 
 
 class RerankFusionTests(unittest.TestCase):
+    def test_text_encoder_returns_normalized_float32_vector(self):
+        class Inputs(dict):
+            def to(self, _device):
+                return self
+
+        class Processor:
+            def __call__(self, **_kwargs):
+                return Inputs()
+
+        class Model:
+            def get_text_features(self, **_kwargs):
+                return torch.tensor([[3.0, 4.0]])
+
+        reranker = Siglip2Reranker.__new__(Siglip2Reranker)
+        reranker.device = "cpu"
+        reranker.processor = Processor()
+        reranker.model = Model()
+        reranker._lock = threading.Lock()
+        vector = reranker.encode_text("xe m?y")
+        self.assertEqual(vector.dtype, np.float32)
+        np.testing.assert_allclose(vector, [[0.6, 0.8]], atol=1e-6)
+
     def test_siglip_can_promote_a_relevant_candidate(self):
         rows = [
             {"rank": 1, "score": 0.9, "video_id": "a"},

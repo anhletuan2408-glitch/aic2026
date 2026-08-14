@@ -12,8 +12,10 @@ import faiss
 import numpy as np
 
 from hybrid_search import HybridConfig, reciprocal_rank_fusion
+from rerank import SIGLIP2_MODEL, Siglip2Reranker
 from retrieval_enhancements import expand_query, fuse_query_rankings
 from search import load_metadata
+from web_app import KeyframeStore
 from web_app_vi import MultilingualFaissEngine
 
 
@@ -89,6 +91,19 @@ def trace_query(
         "clip_expanded": _rank_payload(expanded_ids, target_ids),
     }
     fused_ids = expanded_ids
+    if engine.siglip2_index is not None and engine.reranker is not None:
+        siglip_vector = engine.reranker.encode_text(query)
+        _, full_siglip_ids = engine.siglip2_index.search(
+            siglip_vector, engine.siglip2_index.ntotal
+        )
+        siglip_ids = [int(value) for value in full_siglip_ids[0] if value >= 0]
+        fused_ids, _ = fuse_query_rankings(
+            [expanded_ids, siglip_ids[:candidate_k]],
+            weights=[1.0, 1.0],
+            limit=candidate_k,
+        )
+        signals["siglip2_exact"] = _rank_payload(siglip_ids, target_ids)
+        signals["dense_clip_siglip2"] = _rank_payload(fused_ids, target_ids)
     metadata_video_rank: int | None = None
     if engine.hybrid is not None:
         text_vector = engine.hybrid.encode(query)
@@ -105,7 +120,7 @@ def trace_query(
         )
         current_ocr_ids = ocr_ids[:2500]
         union_ids = list(dict.fromkeys([
-            *expanded_ids, *current_object_ids, *current_ocr_ids
+            *fused_ids, *current_object_ids, *current_ocr_ids
         ]))
         metadata = load_metadata(engine.metadata_path, union_ids)
         video_by_id = {
@@ -116,14 +131,14 @@ def trace_query(
         metadata_video_rank = metadata_ranks.get(video_id)
         no_metadata = replace(engine.hybrid_config, metadata_weight=0.0)
         clip_objects, _ = reciprocal_rank_fusion(
-            expanded_ids,
+            fused_ids,
             current_object_ids,
             video_by_id,
             {},
             no_metadata,
         )
         clip_ocr, _ = reciprocal_rank_fusion(
-            expanded_ids,
+            fused_ids,
             [],
             video_by_id,
             {},
@@ -131,14 +146,14 @@ def trace_query(
             ocr_ids=current_ocr_ids,
         )
         clip_metadata, _ = reciprocal_rank_fusion(
-            expanded_ids,
+            fused_ids,
             [],
             video_by_id,
             metadata_ranks,
             engine.hybrid_config,
         )
         fused_ids, _ = reciprocal_rank_fusion(
-            expanded_ids,
+            fused_ids,
             current_object_ids,
             video_by_id,
             metadata_ranks,
@@ -205,6 +220,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("start", type=int)
     parser.add_argument("end", type=int)
     parser.add_argument("--index-dir", type=Path, default=Path("index"))
+    parser.add_argument("--zip-dir", type=Path, default=Path("E:/"))
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--candidate-k", type=int, default=5000)
     parser.add_argument("--output", type=Path)
@@ -213,17 +229,28 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    engine = MultilingualFaissEngine(
-        args.index_dir, args.device, query_ensemble=True
-    )
-    report = trace_query(
-        engine,
-        args.query,
-        args.video_id,
-        args.start,
-        args.end,
-        args.candidate_k,
-    )
+    store = None
+    reranker = None
+    if (args.index_dir / "siglip2" / "keyframes.faiss").exists():
+        store = KeyframeStore(args.zip_dir)
+        reranker = Siglip2Reranker(
+            store, args.device, model_name=SIGLIP2_MODEL
+        )
+    try:
+        engine = MultilingualFaissEngine(
+            args.index_dir, args.device, reranker=reranker, query_ensemble=True
+        )
+        report = trace_query(
+            engine,
+            args.query,
+            args.video_id,
+            args.start,
+            args.end,
+            args.candidate_k,
+        )
+    finally:
+        if store is not None:
+            store.close()
     rendered = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)

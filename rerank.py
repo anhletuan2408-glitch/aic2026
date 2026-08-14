@@ -71,15 +71,28 @@ class Siglip2Reranker:
         with self._lock:
             return self._rerank_locked(query, rows)
 
-    def _rerank_locked(self, query: str, rows: list[dict[str, object]]) -> list[dict[str, object]]:
-        if not rows:
-            return []
-        text_inputs = self.processor(
+    def encode_text(self, query: str) -> np.ndarray:
+        """Encode one query for the precomputed global SigLIP2 index."""
+        query = query.strip()
+        if not query:
+            raise ValueError("Query must not be empty")
+        with self._lock:
+            features = self._encode_text_locked(query)
+        return np.ascontiguousarray(features.float().cpu().numpy(), dtype=np.float32)
+
+    def _encode_text_locked(self, query: str) -> torch.Tensor:
+        inputs = self.processor(
             text=[query], padding="max_length", return_tensors="pt"
         ).to(self.device)
         with torch.inference_mode():
-            text = self._tensor(self.model.get_text_features(**text_inputs))
-            text = text / text.norm(dim=-1, keepdim=True)
+            features = self._tensor(self.model.get_text_features(**inputs)).float()
+            features /= features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+        return features
+
+    def _rerank_locked(self, query: str, rows: list[dict[str, object]]) -> list[dict[str, object]]:
+        if not rows:
+            return []
+        text = self._encode_text_locked(query)
         all_scores: list[np.ndarray] = []
         for offset in range(0, len(rows), self.config.batch_size):
             batch = rows[offset : offset + self.config.batch_size]

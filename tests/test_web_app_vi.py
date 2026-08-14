@@ -1,10 +1,17 @@
 import io
+import json
+import threading
 from types import SimpleNamespace
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 from zipfile import ZipFile
-from web_app_vi import MODEL_NAME, create_app
+import faiss
+import numpy as np
+from web_app_vi import (
+    MODEL_NAME, MultilingualFaissEngine, create_app, load_siglip2_index,
+)
 from ground_truth_store import GroundTruthStore
 
 class FakeEngine:
@@ -32,6 +39,105 @@ class WebAppVietnameseTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_quality_search_fuses_global_siglip_but_fast_search_skips_it(self):
+        class TextModel:
+            def encode(self, values, **_kwargs):
+                return np.ones((len(values), 2), dtype=np.float32)
+
+        class Index:
+            ntotal = 3
+
+            def __init__(self, ids):
+                self.ids = np.asarray([ids], dtype=np.int64)
+
+            def search(self, _vectors, _count):
+                scores = np.asarray([[.9, .8, .7]], dtype=np.float32)
+                return scores, self.ids
+
+        class Reranker:
+            config = SimpleNamespace(pool_size=3)
+
+            def __init__(self):
+                self.queries = []
+
+            def encode_text(self, query):
+                self.queries.append(query)
+                return np.asarray([[1.0, 0.0]], dtype=np.float32)
+
+            def rerank(self, _query, rows):
+                return rows
+
+        engine = MultilingualFaissEngine.__new__(MultilingualFaissEngine)
+        engine.model = TextModel()
+        engine._model_lock = threading.Lock()
+        engine.index = Index([0, 1, 2])
+        engine.siglip2_index = Index([1, 2, 0])
+        engine.metadata_path = Path("unused")
+        engine.hybrid = None
+        engine.ocr = None
+        engine.query_ensemble = False
+        engine.reranker = Reranker()
+
+        def select(ids, scores, _metadata, size, *_args, **_kwargs):
+            return [{
+                "video_id": f"L21_V00{global_id + 1}",
+                "frame_idx": global_id,
+                "keyframe_no": global_id,
+                "pts_time": float(global_id),
+                "score": float(score),
+                "_global_id": global_id,
+            } for global_id, score in zip(ids[:size], scores[:size])]
+
+        with patch("web_app_vi.load_metadata", return_value={}), \
+             patch("web_app_vi.select_candidates", side_effect=select), \
+             patch("web_app_vi.diversify_ranked_rows", side_effect=lambda rows, *_a, **_k: rows), \
+             patch("web_app_vi.protect_signal_rows", side_effect=lambda rows: rows):
+            quality = engine.search("motorcycle", 2, candidate_k=3, quality=True)
+            fast = engine.search("motorcycle", 2, candidate_k=3, quality=False)
+
+        self.assertEqual(quality[0]["frame_idx"], 1)
+        self.assertEqual(fast[0]["frame_idx"], 0)
+        self.assertEqual(engine.reranker.queries, ["motorcycle"])
+
+    def test_global_siglip_index_requires_complete_matching_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            siglip = root / "siglip2"
+            siglip.mkdir()
+            index = faiss.IndexFlatIP(4)
+            index.add(np.eye(4, dtype=np.float32)[:2])
+            faiss.write_index(index, str(siglip / "keyframes.faiss"))
+            manifest = {
+                "model": "model/test", "frames": 2, "completed": 2,
+                "index_frames": 2, "dimension": 4,
+            }
+            (siglip / "manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            loaded = load_siglip2_index(root, 2, "model/test")
+            self.assertEqual(loaded.ntotal, 2)
+            manifest["completed"] = 1
+            (siglip / "manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "partial"):
+                load_siglip2_index(root, 2, "model/test")
+
+    def test_in_progress_siglip_manifest_does_not_break_startup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            siglip = root / "siglip2"
+            siglip.mkdir()
+            (siglip / "manifest.json").write_text(json.dumps({
+                "model": "model/test", "frames": 2, "completed": 0,
+                "index_frames": 0, "dimension": 4,
+            }), encoding="utf-8")
+            self.assertIsNone(load_siglip2_index(root, 2, "model/test"))
+            index = faiss.IndexFlatIP(4)
+            index.add(np.eye(4, dtype=np.float32)[:2])
+            faiss.write_index(index, str(siglip / "keyframes.faiss"))
+            self.assertIsNone(load_siglip2_index(root, 2, "model/test"))
 
     def test_ground_truth_api_upserts_record(self):
         payload={"query_id":"kis-1","task":"kis","query":"red car",
