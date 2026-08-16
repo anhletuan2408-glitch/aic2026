@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+import unittest
+
+import numpy as np
+
+from search_kis import (
+    diversify_ranked_rows, protect_signal_ids, protect_signal_rows,
+    select_candidates,
+)
+
+
+class CandidateSelectionTests(unittest.TestCase):
+    def test_signal_ids_use_bounded_prefix_then_preserve_dense_order(self) -> None:
+        output = protect_signal_ids(
+            [10, 20, 30, 40], [90, 80, 30, 70, 60], max_protected=3
+        )
+        self.assertEqual(output[:4], [10, 90, 80, 30])
+        self.assertEqual(output[4:7], [20, 40, 70])
+        self.assertEqual(len(output), len(set(output)))
+
+    def test_round_robin_diversifies_videos_and_time(self) -> None:
+        metadata = {
+            1: {
+                "video_id": "L21_V001",
+                "keyframe_no": 1,
+                "frame_idx": 0,
+                "pts_time": 0.0,
+                "title": "A",
+            },
+            2: {
+                "video_id": "L21_V001",
+                "keyframe_no": 2,
+                "frame_idx": 30,
+                "pts_time": 1.0,
+                "title": "A",
+            },
+            3: {
+                "video_id": "L21_V002",
+                "keyframe_no": 1,
+                "frame_idx": 0,
+                "pts_time": 0.0,
+                "title": "B",
+            },
+            4: {
+                "video_id": "L21_V001",
+                "keyframe_no": 3,
+                "frame_idx": 90,
+                "pts_time": 3.0,
+                "title": "A",
+            },
+        }
+        selected = select_candidates(
+            [1, 2, 3, 4],
+            np.array([0.9, 0.8, 0.7, 0.6], dtype=np.float32),
+            metadata,
+            top_k=3,
+            per_video_limit=2,
+            min_time_gap=2.0,
+        )
+        self.assertEqual(
+            [(row["video_id"], row["frame_idx"]) for row in selected],
+            [("L21_V001", 0), ("L21_V002", 0), ("L21_V001", 90)],
+        )
+        self.assertEqual([row["rank"] for row in selected], [1, 2, 3])
+
+    def test_reranked_output_keeps_early_video_coverage_then_alternates(self) -> None:
+        rows = [
+            {"video_id":"L21_V001","frame_idx":10,"score":.99},
+            {"video_id":"L21_V001","frame_idx":20,"score":.98},
+            {"video_id":"L21_V002","frame_idx":30,"score":.97},
+            {"video_id":"L21_V003","frame_idx":40,"score":.96},
+            {"video_id":"L21_V002","frame_idx":50,"score":.95},
+        ]
+        selected = diversify_ranked_rows(rows, top_k=5, unique_prefix=3, per_video_limit=2)
+        self.assertEqual(
+            [(row["video_id"], row["frame_idx"]) for row in selected],
+            [("L21_V001",10),("L21_V002",30),("L21_V003",40),
+             ("L21_V001",20),("L21_V002",50)],
+        )
+        self.assertEqual([row["rank"] for row in selected], [1,2,3,4,5])
+    def test_selection_backfills_same_video_after_diverse_prefix(self) -> None:
+        metadata = {
+            index: {
+                "video_id": "L21_V001",
+                "keyframe_no": index,
+                "frame_idx": index * 30,
+                "pts_time": float(index),
+                "title": "A",
+            }
+            for index in range(1, 7)
+        }
+        selected = select_candidates(
+            list(metadata), np.linspace(.9, .4, 6, dtype=np.float32), metadata,
+            top_k=6, per_video_limit=3, min_time_gap=2.0, diverse_prefix=2,
+        )
+        self.assertEqual(len(selected), 6)
+        self.assertEqual(
+            {row["frame_idx"] for row in selected},
+            {30, 60, 90, 120, 150, 180},
+        )
+
+    def test_rerank_diversity_limit_is_soft_after_prefix(self) -> None:
+        rows = [
+            {"video_id": "L21_V001", "frame_idx": frame, "score": 1.0}
+            for frame in range(6)
+        ]
+        selected = diversify_ranked_rows(
+            rows, top_k=6, unique_prefix=1, per_video_limit=3
+        )
+        self.assertEqual([row["frame_idx"] for row in selected], list(range(6)))
+    def test_protects_bounded_ocr_prefix_after_visual_winner(self) -> None:
+        rows = [
+            {"video_id":"V1","frame_idx":1,"score":.99},
+            {"video_id":"V2","frame_idx":2,"score":.98},
+            {"video_id":"V3","frame_idx":3,"score":.97,"_ocr_rank":2},
+            {"video_id":"V3","frame_idx":4,"score":.96,"_ocr_rank":1},
+            {"video_id":"V4","frame_idx":5,"score":.95,"_ocr_rank":11},
+        ]
+        selected = protect_signal_rows(rows, max_protected=2, max_ocr_rank=10)
+        self.assertEqual(
+            [(row["video_id"], row["frame_idx"]) for row in selected[:3]],
+            [("V1", 1), ("V3", 4), ("V2", 2)],
+        )
+        self.assertEqual([row["rank"] for row in selected], [1,2,3,4,5])
+
+    def test_negative_time_gap_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            select_candidates([], np.array([], dtype=np.float32), {}, 1, 1, -1.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

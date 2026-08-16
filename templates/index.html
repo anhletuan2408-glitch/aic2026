@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIC 2026 FAISS Search</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <p class="eyebrow">AIC 2026 · Textual KIS</p>
+      <h1>FAISS Keyframe Search</h1>
+      <p class="lede">Tìm bằng CLIP, kiểm tra bằng mắt, xuất đúng video_id và frame_id.</p>
+    </header>
+
+    <form id="search-form" class="search-panel">
+      <label>
+        <span>Truy vấn tiếng Việt</span>
+        <textarea id="query" rows="3" required
+          placeholder="Ví dụ: Một người đàn ông mặc áo xanh đang phát biểu trước đám đông"></textarea>
+      </label>
+      <label>
+        <span>Bản dịch / mô tả tiếng Anh</span>
+        <textarea id="variant" rows="2"
+          placeholder="A man in a blue shirt speaking in front of a crowd"></textarea>
+      </label>
+      <div class="controls">
+        <label>
+          <span>Số kết quả</span>
+          <select id="top-k">
+            <option value="20">20</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+        <label>
+          <span>Frame/video</span>
+          <select id="per-video">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3" selected>3</option>
+          </select>
+        </label>
+        <button id="search-button" type="submit">Tìm kiếm</button>
+      </div>
+    </form>
+
+    <section class="status-row" aria-live="polite">
+      <p id="status">Sẵn sàng.</p>
+      <div id="actions" class="actions" hidden>
+        <button id="select-all" type="button" class="secondary">Chọn tất cả</button>
+        <button id="clear-all" type="button" class="secondary">Bỏ chọn</button>
+        <button id="export" type="button">Tải CSV đã chọn</button>
+      </div>
+    </section>
+
+    <section id="results" class="results" aria-label="Kết quả tìm kiếm"></section>
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
