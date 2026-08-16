@@ -1,14 +1,18 @@
 param(
     [int]$PollSeconds = 60,
     [int]$Workers = 2,
-    [int]$PriorityStride = 5
+    [int]$PriorityStride = 5,
+    [int]$MaxRestarts = 6
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Manifest = Join-Path $ProjectDir "index\siglip2-crops\manifest.json"
+$CropIndex = Join-Path $ProjectDir "index\siglip2-crops\crops.faiss"
+$Outputs = Join-Path $ProjectDir "outputs"
 $BuilderName = "build_multicrop_siglip2_index.py"
 $OcrName = "ocr_index.py"
+$restarts = 0
 
 function Find-PythonProcess([string]$ScriptName) {
     return @(Get-CimInstance Win32_Process | Where-Object {
@@ -23,9 +27,15 @@ while ($true) {
             $state = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
             $frames = [int]$state.frames
             $completed = [int]$state.completed
-            $indexed = [int]$state.index_frames
-            if ($frames -gt 0 -and $completed -eq $frames -and $indexed -eq $frames) {
-                Write-Host "Multi-crop complete: $completed/$frames frames."
+            $cropCount = [int]$state.crop_count
+            $indexed = [int]$state.index_vectors
+            $expectedVectors = $frames * $cropCount
+            if (
+                $frames -gt 0 -and $cropCount -gt 0 -and
+                $completed -eq $frames -and $indexed -eq $expectedVectors -and
+                (Test-Path -LiteralPath $CropIndex)
+            ) {
+                Write-Host "Multi-crop complete: $completed frames, $indexed crop vectors."
                 break
             }
         } catch {
@@ -33,7 +43,25 @@ while ($true) {
         }
     }
     if ((Find-PythonProcess $BuilderName).Count -eq 0) {
-        throw "Multi-crop builder stopped before a complete manifest was written; OCR was not started."
+        if ($restarts -ge $MaxRestarts) {
+            throw "Multi-crop failed $restarts times; OCR was not started. Check outputs logs."
+        }
+        $restarts += 1
+        $batchSize = if ($restarts -le 2) { 2 } else { 1 }
+        $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $stdout = Join-Path $Outputs "multicrop-recovery-$stamp.stdout.log"
+        $stderr = Join-Path $Outputs "multicrop-recovery-$stamp.stderr.log"
+        Write-Warning (
+            "Multi-crop stopped; recovery $restarts/$MaxRestarts " +
+            "with batch $batchSize."
+        )
+        Start-Process -FilePath "powershell.exe" -ArgumentList @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+            (Join-Path $ProjectDir "run_multicrop_index.ps1"),
+            "-Device", "cuda", "-BatchSize", "$batchSize", "-FlushEvery", "200"
+        ) -WindowStyle Hidden -RedirectStandardOutput $stdout `
+          -RedirectStandardError $stderr | Out-Null
+        Start-Sleep -Seconds 10
     }
     Start-Sleep -Seconds $PollSeconds
 }
@@ -47,4 +75,3 @@ Write-Host "Resuming OCR with $Workers workers and priority stride $PriorityStri
 & (Join-Path $ProjectDir "run_ocr_index.ps1") `
     -Workers $Workers `
     -PriorityStride $PriorityStride
-
