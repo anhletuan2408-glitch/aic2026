@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from retrieval_enhancements import fuse_query_rankings
 from submission import TRAKEAnswer, write_trake_submission
 from search import load_metadata
 if TYPE_CHECKING:
@@ -173,8 +174,8 @@ def joint_video_candidates(
         best: dict[str, float] = {}
         for rank, row in enumerate(rows, start=1):
             video_id = str(row["video_id"])
-            relevance = float(row.get("score", 0.0))
-            score = relevance + 1.0 / (60 + rank)
+            relevance = float(row.get("score", -2.0))
+            score = (relevance if relevance >= -1.0 else 0.0) + 1.0 / (60 + rank)
             best[video_id] = max(best.get(video_id, -float("inf")), score)
         evidence.append(best)
     common = set(evidence[0])
@@ -184,6 +185,32 @@ def joint_video_candidates(
         common, key=lambda video_id: sum(best[video_id] for best in evidence),
         reverse=True,
     )[:limit]
+
+
+def fuse_event_rankings(
+    base_ids: np.ndarray,
+    base_scores: np.ndarray,
+    siglip_ids: np.ndarray | None = None,
+    limit: int = 10000,
+) -> list[tuple[int, float]]:
+    """Fuse one event's dense rankings while preserving legacy scores if alone."""
+    base = [
+        (int(global_id), float(score))
+        for global_id, score in zip(base_ids, base_scores)
+        if global_id >= 0
+    ]
+    if siglip_ids is None:
+        return base[:limit]
+    rankings = [
+        [global_id for global_id, _ in base],
+        [int(global_id) for global_id in siglip_ids if global_id >= 0],
+    ]
+    fused_ids, _ = fuse_query_rankings(
+        rankings, weights=[1.0, 1.0], limit=limit
+    )
+    # Cross-model similarities are not calibrated. The sentinel makes
+    # downstream alignment use reciprocal rank instead of raw similarity.
+    return [(global_id, -2.0) for global_id in fused_ids]
 
 
 def add_video_conditioned_candidates(
@@ -210,6 +237,10 @@ def add_video_conditioned_candidates(
             (int(global_id), int(frame_idx), float(pts_time))
         )
     additions: list[list[dict[str, object]]] = [[] for _ in event_rows]
+    rank_only = [
+        bool(rows) and all(float(row.get("score", -2.0)) < -1.0 for row in rows)
+        for rows in event_rows
+    ]
     for video_id in video_ids:
         video_records = by_video.get(video_id, [])
         if not video_records:
@@ -236,7 +267,10 @@ def add_video_conditioned_candidates(
                     "video_id": video_id,
                     "frame_idx": frame_idx,
                     "pts_time": pts_time,
-                    "score": float(event_scores[int(index)]),
+                    "score": (
+                        -2.0 if rank_only[event_index]
+                        else float(event_scores[int(index)])
+                    ),
                 })
     for rows, extra in zip(event_rows, additions):
         merged = {
@@ -259,10 +293,23 @@ def search_trake(
     per_video: int = 64,
 ) -> list[TRAKEAnswer]:
     vectors = engine.encode_many(events)
-    similarities, ids = engine.index.search(vectors, min(candidate_k, engine.index.ntotal))
+    similarities, ids = engine.index.search(
+        vectors, min(candidate_k, engine.index.ntotal)
+    )
+    siglip_ids: np.ndarray | None = None
+    global_siglip = getattr(engine, "siglip2_index", None)
+    reranker = getattr(engine, "reranker", None)
+    if global_siglip is not None and reranker is not None:
+        siglip_vectors = reranker.encode_text_many(events)
+        _, siglip_ids = global_siglip.search(
+            siglip_vectors, min(candidate_k, global_siglip.ntotal)
+        )
     rows: list[list[dict[str, object]]] = []
-    for event_ids, event_scores in zip(ids, similarities):
-        ranked_pairs = [(int(value), float(score)) for value, score in zip(event_ids, event_scores) if value >= 0]
+    for event_index, (event_ids, event_scores) in enumerate(zip(ids, similarities)):
+        event_siglip_ids = None if siglip_ids is None else siglip_ids[event_index]
+        ranked_pairs = fuse_event_rankings(
+            event_ids, event_scores, event_siglip_ids, candidate_k
+        )
         ranked_ids = [value for value, _ in ranked_pairs]
         score_by_id = dict(ranked_pairs)
         metadata = load_metadata(engine.metadata_path, ranked_ids)

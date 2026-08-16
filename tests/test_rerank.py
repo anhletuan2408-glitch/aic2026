@@ -8,27 +8,32 @@ from rerank import RerankConfig, Siglip2Reranker, fuse_rerank_scores
 
 
 class RerankFusionTests(unittest.TestCase):
-    def test_text_encoder_returns_normalized_float32_vector(self):
+    def test_text_encoder_returns_normalized_float32_vectors(self):
         class Inputs(dict):
             def to(self, _device):
                 return self
 
         class Processor:
-            def __call__(self, **_kwargs):
-                return Inputs()
+            def __call__(self, text, **_kwargs):
+                return Inputs(count=len(text))
 
         class Model:
-            def get_text_features(self, **_kwargs):
-                return torch.tensor([[3.0, 4.0]])
+            def get_text_features(self, count, **_kwargs):
+                return torch.tensor([[3.0, 4.0]]).repeat(count, 1)
 
         reranker = Siglip2Reranker.__new__(Siglip2Reranker)
         reranker.device = "cpu"
         reranker.processor = Processor()
         reranker.model = Model()
         reranker._lock = threading.Lock()
-        vector = reranker.encode_text("xe m?y")
+        vector = reranker.encode_text("motorcycle")
+        vectors = reranker.encode_text_many(["motorcycle", "car"])
         self.assertEqual(vector.dtype, np.float32)
+        self.assertEqual(vectors.shape, (2, 2))
         np.testing.assert_allclose(vector, [[0.6, 0.8]], atol=1e-6)
+        np.testing.assert_allclose(vectors, [[0.6, 0.8], [0.6, 0.8]], atol=1e-6)
+        with self.assertRaises(ValueError):
+            reranker.encode_text_many([])
 
     def test_siglip_can_promote_a_relevant_candidate(self):
         rows = [
