@@ -84,6 +84,8 @@ def align_event_candidates(
             (candidate, candidate.score, (candidate.frame_idx,))
             for candidate in by_event[0][video_id]
         ]
+        states.sort(key=lambda item: item[1], reverse=True)
+        states = states[:beam_width]
         for grouped in by_event[1:]:
             next_states: list[tuple[EventCandidate, float, tuple[int, ...]]] = []
             for candidate in grouped[video_id]:
@@ -103,7 +105,11 @@ def align_event_candidates(
                     ))
                 extensions.sort(key=lambda item: item[1], reverse=True)
                 next_states.extend(extensions[:beam_width])
-            states = next_states
+            # Keep one global beam, rather than one beam per candidate.  The old
+            # form could grow to per_video * beam_width states at every event
+            # and exhaust RAM for ordinary three-event queries.
+            next_states.sort(key=lambda item: item[1], reverse=True)
+            states = next_states[:beam_width]
             if not states:
                 break
         completed = [
@@ -291,9 +297,13 @@ def add_video_conditioned_candidates(
 def search_trake(
     engine: MultilingualFaissEngine,
     events: list[str],
-    candidate_k: int = 10000,
-    per_video: int = 64,
+    candidate_k: int = 4000,
+    per_video: int = 32,
 ) -> list[TRAKEAnswer]:
+    # Bound FAISS result buffers on the 4 GB target machine.  Recall is
+    # recovered by object fusion and the video-conditioned second pass below.
+    candidate_k = max(200, min(int(candidate_k), 4000))
+    per_video = max(4, min(int(per_video), 32))
     variant_groups = [temporal_event_variants(event) for event in events]
     flattened = [variant for group in variant_groups for variant in group]
     flat_vectors = engine.encode_many(flattened)

@@ -313,6 +313,16 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
     def handle_value_error(error: ValueError) -> tuple[Response, int]:
         return jsonify({"error": str(error)}), 400
 
+    @app.errorhandler(MemoryError)
+    def handle_memory_error(error: MemoryError) -> tuple[Response, int]:
+        app.logger.exception("Request ran out of memory")
+        return jsonify({
+            "error": (
+                "Máy đang thiếu bộ nhớ trong lúc tạo index. "
+                "Hãy thử lại sau khi multi-crop hoàn tất."
+            )
+        }), 503
+
     @app.get("/")
     def home() -> str:
         return render_template("index_vi.html")

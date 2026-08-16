@@ -67,7 +67,11 @@ class AssistantService:
                     )
                 else:
                     events = split_events(query)
-                    results = self._trake_rows(search_trake(self.engine, events))
+                    results = self._trake_rows(search_trake(
+                        self.engine, events,
+                        candidate_k=int(options.get("candidate_k", 4000)),
+                        per_video=max(8, int(options.get("per_video", 3)) * 8),
+                    ))
                     verify = bool(options.get(
                         "trake_verify", self.engine.device == "cuda"
                     ))
