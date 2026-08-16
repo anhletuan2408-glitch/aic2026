@@ -1,8 +1,12 @@
+import sqlite3
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
-from assistant_service import AssistantService
+from assistant_service import AssistantService, rerank_trake_rows
+from submission import TRAKEAnswer
 
 
 class FakeEngine:
@@ -15,6 +19,16 @@ class FakeEngine:
 
 
 class AssistantServiceTests(TestCase):
+    def test_trake_vlm_scores_promote_verified_path_and_keep_recall(self):
+        rows = [
+            {"video_id": "A", "frame_ids": [1, 2]},
+            {"video_id": "B", "frame_ids": [3, 4]},
+            {"video_id": "C", "frame_ids": [5, 6]},
+        ]
+        ranked = rerank_trake_rows(rows, [(0, 20), (1, 90)])
+        self.assertEqual([row["video_id"] for row in ranked], ["B", "A", "C"])
+        self.assertEqual(ranked[0]["vlm_score"], 90)
+
     def setUp(self):
         self.engine = FakeEngine()
         self.service = AssistantService(self.engine, object())
@@ -31,6 +45,28 @@ class AssistantServiceTests(TestCase):
             with self.assertRaises(RuntimeError):
                 self.service.run("kis", "query")
         self.assertEqual(self.service.status, "ready")
+
+    def test_trake_rows_include_keyframes_for_visual_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            metadata = Path(directory) / "metadata.sqlite3"
+            connection = sqlite3.connect(metadata)
+            connection.execute(
+                "CREATE TABLE keyframes(video_id TEXT,frame_idx INTEGER,keyframe_no INTEGER)"
+            )
+            connection.executemany(
+                "INSERT INTO keyframes VALUES(?,?,?)",
+                [("L21_V001", 100, 4), ("L21_V001", 200, 9)],
+            )
+            connection.commit()
+            connection.close()
+            self.engine.metadata_path = metadata
+            rows = self.service._trake_rows([
+                TRAKEAnswer("L21_V001", (100, 200))
+            ])
+        self.assertEqual(rows, [{
+            "video_id": "L21_V001", "frame_ids": [100, 200],
+            "keyframe_nos": [4, 9],
+        }])
 
     @patch("assistant_service.SentenceTransformer", return_value="restored")
     @patch("assistant_service.context_images")

@@ -72,6 +72,17 @@ class TrakeSearchTests(unittest.TestCase):
         self.assertEqual(aligned[0][1].frame_ids, (100, 200, 300))
         self.assertEqual(aligned[1][1].frame_ids, (100, 500, 900))
 
+    def test_top_path_prefers_temporally_continuous_events(self) -> None:
+        rows = [
+            [{"video_id": "A", "frame_idx": 100, "pts_time": 0.0}],
+            [
+                {"video_id": "A", "frame_idx": 200, "pts_time": 8.0},
+                {"video_id": "A", "frame_idx": 300, "pts_time": 180.0},
+            ],
+        ]
+        aligned = align_event_candidates(rows, gap_profiles=(0.0,))
+        self.assertEqual(aligned[0][1].frame_ids, (100, 200))
+
 
     def test_conditioned_pass_searches_all_frames_inside_joint_video(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

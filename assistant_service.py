@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import gc
+import sqlite3
 import threading
 import time
+from contextlib import closing
 from typing import Any
 
 import torch
@@ -20,6 +22,22 @@ from retrieval_enhancements import (
 from rerank import Siglip2Reranker
 from search_kis import diversify_ranked_rows
 from trake_search import search_trake, split_events
+
+
+def rerank_trake_rows(
+    rows: list[dict[str, Any]], scores: list[tuple[int, int]]
+) -> list[dict[str, Any]]:
+    """Promote VLM-verified paths while retaining unverified deep recall."""
+    verified = []
+    used = set()
+    for index, score in scores:
+        if 0 <= index < len(rows):
+            verified.append((score, index, {**rows[index], "vlm_score": score}))
+            used.add(index)
+    verified.sort(key=lambda item: (-item[0], item[1]))
+    return [item[2] for item in verified] + [
+        row for index, row in enumerate(rows) if index not in used
+    ]
 
 
 class AssistantService:
@@ -48,14 +66,113 @@ class AssistantService:
                         query, int(options.get("qa_candidates", 3))
                     )
                 else:
-                    results = [{"video_id": a.video_id, "frame_ids": list(a.frame_ids)}
-                               for a in search_trake(self.engine, split_events(query))]
+                    events = split_events(query)
+                    results = self._trake_rows(search_trake(self.engine, events))
+                    verify = bool(options.get(
+                        "trake_verify", self.engine.device == "cuda"
+                    ))
+                    if verify:
+                        results = self._verify_trake_locked(
+                            events, results,
+                            int(options.get("trake_candidates", 8)),
+                        )
                 return {"task": task, "phase": ("answered" if task == "qa" else "retrieval"), "query": query,
                         "count": len(results),
                         "elapsed_ms": round((time.perf_counter()-started)*1000),
                         "results": results}
             finally:
                 self.status = "ready"
+
+    def _trake_rows(self, answers: list[Any]) -> list[dict[str, Any]]:
+        rows = [
+            {"video_id": answer.video_id, "frame_ids": list(answer.frame_ids)}
+            for answer in answers
+        ]
+        metadata_path = getattr(self.engine, "metadata_path", None)
+        if metadata_path is None or not rows:
+            return rows
+        by_video: dict[str, set[int]] = {}
+        for row in rows:
+            by_video.setdefault(str(row["video_id"]), set()).update(row["frame_ids"])
+        keyframes: dict[tuple[str, int], int] = {}
+        with closing(sqlite3.connect(metadata_path)) as connection:
+            for video_id, frame_ids in by_video.items():
+                ordered = sorted(frame_ids)
+                for offset in range(0, len(ordered), 900):
+                    chunk = ordered[offset:offset + 900]
+                    placeholders = ",".join("?" for _ in chunk)
+                    records = connection.execute(
+                        "SELECT video_id,frame_idx,keyframe_no FROM keyframes "
+                        f"WHERE video_id=? AND frame_idx IN ({placeholders})",
+                        [video_id, *chunk],
+                    )
+                    for found_video, frame_idx, keyframe_no in records:
+                        keyframes[(str(found_video), int(frame_idx))] = int(keyframe_no)
+        for row in rows:
+            video_id = str(row["video_id"])
+            resolved = [
+                keyframes.get((video_id, int(frame_idx)))
+                for frame_idx in row["frame_ids"]
+            ]
+            if all(keyframe is not None for keyframe in resolved):
+                row["keyframe_nos"] = resolved
+        return rows
+
+    def _verify_trake_locked(
+        self, events: list[str], rows: list[dict[str, Any]], candidates: int
+    ) -> list[dict[str, Any]]:
+        if candidates < 1 or candidates > 20:
+            raise ValueError("trake_candidates must be in [1, 20]")
+        eligible = [
+            (index, row) for index, row in enumerate(rows[:candidates])
+            if len(row.get("keyframe_nos", [])) == len(events)
+        ]
+        if not eligible:
+            return rows
+        reranker = getattr(self.engine, "reranker", None)
+        spec = ((reranker.model_name, reranker.config, reranker.keyframes)
+                if reranker is not None else None)
+        device = self.engine.device
+        self.engine.model, self.engine.reranker = None, None
+        del reranker
+        self._clear_gpu()
+        answerer = None
+        scores: list[tuple[int, int]] = []
+        try:
+            answerer = QwenVLAnswerer(device)
+            for index, row in eligible:
+                groups = [
+                    context_images(
+                        self.keyframes, str(row["video_id"]), int(keyframe_no)
+                    )
+                    for keyframe_no in row["keyframe_nos"]
+                ]
+                if any(not group for group in groups):
+                    for group in groups:
+                        for image in group:
+                            image.close()
+                    continue
+                try:
+                    scores.append((
+                        index, answerer.score_temporal_sequence(events, groups)
+                    ))
+                finally:
+                    for group in groups:
+                        for image in group:
+                            image.close()
+            return rerank_trake_rows(rows, scores)
+        finally:
+            if answerer is not None:
+                del answerer
+            self._clear_gpu()
+            self.engine.model = SentenceTransformer(
+                self.engine.model_name, device=device
+            )
+            if spec is not None:
+                name, config, frames = spec
+                self.engine.reranker = Siglip2Reranker(
+                    frames, device, config=config, model_name=name
+                )
 
     def _retrieve(self, query: str, options: dict[str, Any], quality: bool) -> list[dict[str, Any]]:
         return self.engine.search(query, int(options.get("top_k", 50)),

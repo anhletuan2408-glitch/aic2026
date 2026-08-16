@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +20,42 @@ class HybridConfig:
     ocr_weight: float = 1.10
     object_labels: int = 12
     object_candidates: int = 2500
+    conjunction_weight: float = 0.45
+
+
+def _fold_query(value: str) -> str:
+    folded = unicodedata.normalize("NFD", value.casefold())
+    return "".join(
+        char for char in folded if unicodedata.category(char) != "Mn"
+    ).replace("đ", "d")
+
+
+def object_concept_groups(query: str) -> list[tuple[str, ...]]:
+    """Map explicit query entities to detector-label groups, preserving AND intent."""
+    text = _fold_query(query)
+    groups: list[tuple[str, ...]] = []
+    if re.search(r"\b(?:phu nu|nguoi nu|woman|female)\b", text):
+        groups.append(("Woman", "Person"))
+    elif re.search(r"\b(?:dan ong|nguoi nam|man|male)\b", text):
+        groups.append(("Man", "Person"))
+    elif re.search(r"\b(?:nguoi|person|people)\b", text):
+        groups.append(("Person",))
+    concepts = (
+        (r"\b(?:xe may|mo to|motorcycle|motorbike)\b", ("Motorcycle",)),
+        (r"\b(?:xe dap|bicycle|bike)\b", ("Bicycle",)),
+        (r"\b(?:o to|xe hoi|car)\b", ("Car",)),
+        (r"\b(?:xe buyt|bus)\b", ("Bus",)),
+        (r"\b(?:xe tai|truck)\b", ("Truck",)),
+        (r"\b(?:con meo|meo|cat)\b", ("Cat",)),
+        (r"\b(?:con cho|cho|dog)\b", ("Dog",)),
+        (r"\b(?:ghe|chair|seat)\b", ("Chair", "Couch", "Bench")),
+        (r"\b(?:cua|door)\b", ("Door",)),
+        (r"\b(?:micro|microphone)\b", ("Microphone",)),
+    )
+    for pattern, labels in concepts:
+        if re.search(pattern, text):
+            groups.append(labels)
+    return groups
 
 
 class HybridSignals:
@@ -34,6 +72,9 @@ class HybridSignals:
         self.video_ids = [str(value) for value in data["video_ids"]]
         self.video_vectors = data["video_vectors"].astype(np.float32)
         self.frame_count = int(data["frame_count"][0])
+        self._label_by_name = {
+            label.casefold(): index for index, label in enumerate(self.labels)
+        }
         self.model = SentenceTransformer(self.text_model_name, device=device)
         self._model_lock = threading.Lock()
 
@@ -73,6 +114,43 @@ class HybridSignals:
         ids = np.argpartition(frame_scores, -count)[-count:]
         ids = ids[np.argsort(frame_scores[ids])[::-1]]
         return [int(value) for value in ids], explanations
+
+    def object_conjunction_ranking(
+        self, query: str, config: HybridConfig
+    ) -> tuple[list[int], list[str]]:
+        """Rank frames that contain every distinct object concept in the query."""
+        requested = object_concept_groups(query)
+        if len(requested) < 2:
+            return [], []
+        group_scores: list[np.ndarray] = []
+        matched: list[str] = []
+        for alternatives in requested:
+            scores = np.zeros(self.frame_count, dtype=np.float32)
+            found = []
+            for label in alternatives:
+                label_id = self._label_by_name.get(label.casefold())
+                if label_id is None:
+                    continue
+                start, end = self.offsets[label_id:label_id + 2]
+                ids = self.frame_ids[start:end]
+                np.maximum.at(scores, ids, self.scores[start:end])
+                found.append(label)
+            if not found:
+                continue
+            group_scores.append(scores)
+            matched.append("/".join(found))
+        if len(group_scores) < 2:
+            return [], matched
+        stacked = np.stack(group_scores)
+        valid = np.all(stacked > 0.0, axis=0)
+        ids = np.flatnonzero(valid)
+        if not len(ids):
+            return [], matched
+        scores = stacked[:, ids].min(axis=0) + 0.25 * stacked[:, ids].mean(axis=0)
+        count = min(config.object_candidates, len(ids))
+        selected = np.argpartition(scores, -count)[-count:]
+        selected = selected[np.argsort(scores[selected])[::-1]]
+        return [int(ids[index]) for index in selected], matched
 
     def metadata_video_ranks(self, query_vector: np.ndarray) -> dict[str, int]:
         similarities = self.video_vectors @ query_vector

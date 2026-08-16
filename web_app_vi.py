@@ -11,12 +11,12 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 from sentence_transformers import SentenceTransformer
 from hybrid_search import HybridConfig, HybridSignals, reciprocal_rank_fusion
 from multicrop import load_multicrop_index, search_multicrop
-from ocr_index import OCRSignals
+from ocr_index import OCRSignals, has_ocr_intent
 from rerank import (
     RerankConfig, SIGLIP2_BASE_MODEL, SIGLIP2_MODEL, Siglip2Reranker
 )
 from retrieval_enhancements import (
-    expand_query, fuse_query_rankings,
+    expand_query, fuse_query_rankings, normalize_visual_query,
 )
 from search import choose_device, load_metadata
 from search_kis import (
@@ -119,7 +119,11 @@ class MultilingualFaissEngine:
         query = query.strip()
         if not query:
             raise ValueError("Query must not be empty")
-        variants = expand_query(query) if self.query_ensemble else [query]
+        normalized_query = normalize_visual_query(query)
+        variants = (
+            expand_query(normalized_query)
+            if self.query_ensemble else [normalized_query]
+        )
         vectors = self.encode_many(variants)
         candidate_k = min(max(candidate_k, top_k), self.index.ntotal)
         _, ids = self.index.search(vectors, candidate_k)
@@ -130,7 +134,7 @@ class MultilingualFaissEngine:
         crop_by_id: dict[int, int] = {}
         siglip_vector = None
         if self.siglip2_index is not None and self.reranker is not None and quality:
-            siglip_vector = self.reranker.encode_text(query)
+            siglip_vector = self.reranker.encode_text(normalized_query)
             _, siglip_values = self.siglip2_index.search(siglip_vector, candidate_k)
             siglip_ids = [int(value) for value in siglip_values[0] if value >= 0]
             ranked_ids, ranked_scores = fuse_query_rankings(
@@ -143,7 +147,7 @@ class MultilingualFaissEngine:
             and self.reranker is not None
         ):
             if siglip_vector is None:
-                siglip_vector = self.reranker.encode_text(query)
+                siglip_vector = self.reranker.encode_text(normalized_query)
             crop_ids, _, crop_by_id = search_multicrop(
                 self.multicrop_index, siglip_vector, candidate_k
             )
@@ -152,14 +156,25 @@ class MultilingualFaissEngine:
             )
         top_labels: list[str] = []
         if self.hybrid is not None and use_hybrid:
-            text_vector = self.hybrid.encode(query)
+            text_vector = self.hybrid.encode(normalized_query)
             object_ids, matched_labels = (
                 self.hybrid.object_ranking(text_vector, self.hybrid_config)
                 if self.hybrid_config.object_weight > 0.0 else ([], [])
             )
+            conjunction_ids, conjunction_labels = self.hybrid.object_conjunction_ranking(
+                normalized_query, self.hybrid_config
+            )
+            if conjunction_ids:
+                ranked_ids, ranked_scores = fuse_query_rankings(
+                    [ranked_ids, conjunction_ids],
+                    weights=[1.0, self.hybrid_config.conjunction_weight],
+                    limit=candidate_k,
+                )
             ocr_ids = (
-                self.ocr.ranking(query)
-                if use_ocr and self.ocr is not None else []
+                self.ocr.ranking(normalized_query)
+                if (use_ocr and self.ocr is not None
+                    and has_ocr_intent(normalized_query))
+                else []
             )
             union_ids = list(dict.fromkeys([*ranked_ids, *object_ids, *ocr_ids]))
             metadata = load_metadata(self.metadata_path, union_ids)
@@ -183,7 +198,9 @@ class MultilingualFaissEngine:
                     metadata_ranks, self.hybrid_config,
                     ocr_ids=ocr_ids,
                 )
-            top_labels = [label for label, _ in matched_labels[:5]]
+            top_labels = [*conjunction_labels, *[
+                label for label, _ in matched_labels[:5]
+            ]]
             ocr_ranks = {
                 global_id: rank for rank, global_id in enumerate(ocr_ids, start=1)
             }
@@ -371,6 +388,10 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
                      and getattr(search_engine, "reranker", None) is not None),
             vlm_candidates=int(payload.get("vlm_candidates", 6)),
             qa_candidates=int(payload.get("qa_candidates", 10)),
+            trake_verify=bool(payload.get(
+                "trake_verify", getattr(search_engine, "device", "cpu") == "cuda"
+            )),
+            trake_candidates=int(payload.get("trake_candidates", 8)),
         ))
     @app.post("/api/qa/candidates")
     def api_qa_candidates() -> Response:

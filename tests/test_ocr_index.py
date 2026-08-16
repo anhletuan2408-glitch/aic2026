@@ -4,10 +4,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ocr_index import OCRSignals, connect_ocr, fts_query, insert_batch
+from ocr_index import (
+    OCRSignals, connect_ocr, fts_query, has_ocr_intent, insert_batch,
+)
 
 
 class OCRIndexTests(unittest.TestCase):
+    def test_ocr_requires_explicit_text_intent(self) -> None:
+        self.assertFalse(has_ocr_intent("một con mèo màu đen"))
+        self.assertTrue(has_ocr_intent("dòng chữ trên biển hiệu ghi gì?"))
+        self.assertTrue(has_ocr_intent('tìm frame có chữ "xin chào"'))
+
     def test_fts_search_is_unicode_and_ranked(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ocr.sqlite3"

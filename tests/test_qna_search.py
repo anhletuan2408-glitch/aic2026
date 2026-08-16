@@ -10,7 +10,8 @@ from pathlib import Path
 from PIL import Image
 
 from qna_search import (
-    answer_aliases, clean_answer, compose_qa_hypothesis_candidates, context_images,
+    QwenVLAnswerer, answer_aliases, clean_answer,
+    compose_qa_hypothesis_candidates, context_images,
     expand_qa_context_rows,
     fuse_qa_candidate_rows,
     rank_qa_answers,
@@ -18,6 +19,13 @@ from qna_search import (
 
 
 class QnaSearchTests(unittest.TestCase):
+    def test_temporal_verifier_parses_bounded_integer_score(self) -> None:
+        answerer = QwenVLAnswerer.__new__(QwenVLAnswerer)
+        answerer._generate = lambda _content, _tokens: "87"
+        self.assertEqual(
+            answerer.score_temporal_sequence(["stand", "sit"], [[], []]), 87
+        )
+
     def test_answer_aliases_strip_name_year_and_expand_count(self) -> None:
         self.assertEqual(
             answer_aliases("Tên ứng viên nào?", "TRUMP 2024"),

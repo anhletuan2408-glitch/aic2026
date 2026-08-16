@@ -4,12 +4,33 @@ import unittest
 
 from retrieval_enhancements import (
     expand_query, fuse_query_rankings, qa_answer_hypothesis_queries,
-
-    qa_retrieval_query, temporal_neighbor_ranking,
+    normalize_visual_query, qa_retrieval_query, temporal_event_variants,
+    temporal_neighbor_ranking,
 )
 
 
 class RetrievalEnhancementTests(unittest.TestCase):
+    def test_temporal_event_variant_preserves_chair_relation(self) -> None:
+        self.assertEqual(
+            temporal_event_variants("một người đàn ông đứng trước ghế"),
+            ["một người đàn ông đứng trước ghế",
+             "a man standing in front of a chair"],
+        )
+        self.assertIn(
+            "a man sitting down on a chair",
+            temporal_event_variants("người đàn ông ngồi xuống ghế"),
+        )
+
+    def test_repairs_common_vietnamese_ime_errors_without_splitting_relation(self) -> None:
+        self.assertEqual(
+            normalize_visual_query("momojt nguoi phu nu chay xe may"),
+            "một người phụ nữ chạy xe máy",
+        )
+        variants = expand_query("momojt nguoi phu nu chay xe may")
+        self.assertEqual(variants[0], "một người phụ nữ chạy xe máy")
+        self.assertIn("a woman riding a motorcycle", variants)
+        self.assertNotIn("xe máy", variants)
+
     def test_qa_answer_hypotheses_cover_common_answer_types(self) -> None:
         colors = qa_answer_hypothesis_queries("Chiếc áo có màu gì?")
         counts = qa_answer_hypothesis_queries("Có bao nhiêu người trước bảng?")

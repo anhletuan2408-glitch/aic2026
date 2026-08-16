@@ -26,6 +26,18 @@ _STOPWORDS = {
     "the", "a", "an", "in", "on", "of", "is", "are", "text", "screen",
 }
 
+_OCR_INTENT = re.compile(
+    r"(?:\b(?:chữ|dòng chữ|văn bản|ghi gì|viết gì|biển hiệu|biển báo|"
+    r"phụ đề|tiêu đề|logo|nhãn|số điện thoại|mã số|text|word|caption|"
+    r"subtitle|sign|written|says)\b|[\"“”][^\"“”]{2,}[\"“”])",
+    re.IGNORECASE,
+)
+
+
+def has_ocr_intent(text: str) -> bool:
+    """Keep OCR out of ordinary visual descriptions unless text is requested."""
+    return bool(_OCR_INTENT.search(text.strip()))
+
 
 def normalized_terms(text: str) -> list[str]:
     folded = unicodedata.normalize("NFKD", text.casefold())

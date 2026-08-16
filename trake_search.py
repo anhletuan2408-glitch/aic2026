@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from retrieval_enhancements import fuse_query_rankings
+from retrieval_enhancements import fuse_query_rankings, temporal_event_variants
 from submission import TRAKEAnswer, write_trake_submission
 from search import load_metadata
 if TYPE_CHECKING:
@@ -95,8 +95,10 @@ def align_event_candidates(
                     if gap < minimum_gap:
                         continue
                     distinct_bonus = min(gap, 10.0) * 0.0005
+                    continuity_penalty = max(0.0, gap - 15.0) * 0.00025
                     extensions.append((
-                        candidate, score + candidate.score + distinct_bonus,
+                        candidate,
+                        score + candidate.score + distinct_bonus - continuity_penalty,
                         (*frames, candidate.frame_idx),
                     ))
                 extensions.sort(key=lambda item: item[1], reverse=True)
@@ -292,7 +294,17 @@ def search_trake(
     candidate_k: int = 10000,
     per_video: int = 64,
 ) -> list[TRAKEAnswer]:
-    vectors = engine.encode_many(events)
+    variant_groups = [temporal_event_variants(event) for event in events]
+    flattened = [variant for group in variant_groups for variant in group]
+    flat_vectors = engine.encode_many(flattened)
+    vectors = []
+    offset = 0
+    for group in variant_groups:
+        combined = flat_vectors[offset:offset + len(group)].mean(axis=0)
+        combined /= max(float(np.linalg.norm(combined)), 1e-8)
+        vectors.append(combined)
+        offset += len(group)
+    vectors = np.ascontiguousarray(vectors, dtype=np.float32)
     similarities, ids = engine.index.search(
         vectors, min(candidate_k, engine.index.ntotal)
     )
@@ -300,7 +312,15 @@ def search_trake(
     global_siglip = getattr(engine, "siglip2_index", None)
     reranker = getattr(engine, "reranker", None)
     if global_siglip is not None and reranker is not None:
-        siglip_vectors = reranker.encode_text_many(events)
+        flat_siglip = reranker.encode_text_many(flattened)
+        siglip_vectors = []
+        offset = 0
+        for group in variant_groups:
+            combined = flat_siglip[offset:offset + len(group)].mean(axis=0)
+            combined /= max(float(np.linalg.norm(combined)), 1e-8)
+            siglip_vectors.append(combined)
+            offset += len(group)
+        siglip_vectors = np.ascontiguousarray(siglip_vectors, dtype=np.float32)
         _, siglip_ids = global_siglip.search(
             siglip_vectors, min(candidate_k, global_siglip.ntotal)
         )
@@ -310,6 +330,17 @@ def search_trake(
         ranked_pairs = fuse_event_rankings(
             event_ids, event_scores, event_siglip_ids, candidate_k
         )
+        hybrid = getattr(engine, "hybrid", None)
+        if hybrid is not None:
+            object_ids, _ = hybrid.object_conjunction_ranking(
+                events[event_index], engine.hybrid_config
+            )
+            if object_ids:
+                fused_ids, _ = fuse_query_rankings(
+                    [[global_id for global_id, _ in ranked_pairs], object_ids],
+                    weights=[1.0, 0.80], limit=candidate_k,
+                )
+                ranked_pairs = [(global_id, -2.0) for global_id in fused_ids]
         ranked_ids = [value for value, _ in ranked_pairs]
         score_by_id = dict(ranked_pairs)
         metadata = load_metadata(engine.metadata_path, ranked_ids)

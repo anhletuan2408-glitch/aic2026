@@ -295,6 +295,30 @@ class QwenVLAnswerer:
         })
         return clean_answer(self._generate(content, 24))
 
+    def score_temporal_sequence(
+        self, events: list[str], image_groups: list[list[Image.Image]]
+    ) -> int:
+        content: list[dict[str, object]] = [{
+            "type": "text",
+            "text": (
+                "You are verifying a chronological video-event sequence. "
+                "For each target event, inspect its before/current/after images. "
+                "Judge the action/state, chronological order, same scene, and "
+                "same subject continuity. Return only one integer from 0 to 100; "
+                "100 means every event and transition clearly matches."
+            ),
+        }]
+        for index, (event, images) in enumerate(zip(events, image_groups), start=1):
+            content.append({
+                "type": "text", "text": f"Target event {index}: {event}"
+            })
+            content.extend({"type": "image", "image": image} for image in images)
+        raw = self._generate(content, 8)
+        match = re.search(r"\b(100|[1-9]?\d)\b", raw)
+        if match is None:
+            raise ValueError(f"VLM returned no temporal score: {raw[:80]}")
+        return int(match.group(1))
+
 
 def context_images(
     store: KeyframeStore, video_id: str, keyframe_no: int, radius: int = 1,

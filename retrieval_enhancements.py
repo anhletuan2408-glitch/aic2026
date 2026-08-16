@@ -19,6 +19,64 @@ _QA_QUESTION_PATTERNS = (
     r"\b(?:what|which|who)\b",
 )
 
+_VISUAL_QUERY_FIXES = (
+    (r"\b(?:momojt|moojt|mootj|motj)\b", "một"),
+    (r"\bnguoi\b", "người"),
+    (r"\bphu\s+nu\b", "phụ nữ"),
+    (r"\bxe\s+may\b", "xe máy"),
+    (r"\bchay\s+xe\b", "chạy xe"),
+)
+
+
+def normalize_visual_query(query: str) -> str:
+    """Repair a small set of high-impact Vietnamese IME/diacritic mistakes."""
+    normalized = " ".join(query.split())
+    for pattern, replacement in _VISUAL_QUERY_FIXES:
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+    return normalized
+
+
+def relation_query_variant(query: str) -> str | None:
+    """Add a relation-preserving English variant for common transport scenes."""
+    folded = query.casefold()
+    if "xe máy" not in folded:
+        return None
+    if "phụ nữ" in folded or "người nữ" in folded:
+        subject = "a woman"
+    elif "đàn ông" in folded or "người nam" in folded:
+        subject = "a man"
+    elif "người" in folded:
+        subject = "a person"
+    else:
+        return None
+    action = "riding" if re.search(r"\b(?:chạy|đi|lái|ngồi trên)\b", folded) else "with"
+    return f"{subject} {action} a motorcycle"
+
+
+def temporal_event_variants(event: str) -> list[str]:
+    """Keep the Vietnamese event and add a relation-faithful English wording."""
+    original = normalize_visual_query(event)
+    folded = original.casefold()
+    if "phụ nữ" in folded or "người nữ" in folded:
+        subject = "a woman"
+    elif "đàn ông" in folded or "người nam" in folded:
+        subject = "a man"
+    elif "người" in folded:
+        subject = "a person"
+    else:
+        subject = None
+    translated = None
+    if subject and "ghế" in folded:
+        if "đứng trước" in folded:
+            translated = f"{subject} standing in front of a chair"
+        elif re.search(r"\bngồi\s+xuống\b", folded):
+            translated = f"{subject} sitting down on a chair"
+        elif "ngồi" in folded:
+            translated = f"{subject} sitting on a chair"
+    if translated is None:
+        translated = relation_query_variant(original)
+    return [original] if translated is None else [original, translated]
+
 
 def qa_retrieval_query(question: str) -> str:
     original = " ".join(question.split())
@@ -66,13 +124,16 @@ def qa_answer_hypothesis_queries(question: str) -> list[str]:
 
 
 def expand_query(query: str, max_variants: int = 3) -> list[str]:
-    original = " ".join(query.split())
+    original = normalize_visual_query(query)
     if not original:
         raise ValueError("Query must not be empty")
     variants = [original]
     words = original.split()
+    relation = relation_query_variant(original)
+    if relation is not None:
+        variants.append(relation)
     if len(words) < 7:
-        return variants
+        return variants[:max_variants]
     content = " ".join(
         word for word in words
         if word.casefold().strip(",.;:!?") not in VIETNAMESE_FILLERS
