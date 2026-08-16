@@ -10,6 +10,7 @@ import numpy as np
 from flask import Flask, Response, jsonify, render_template, request, send_file
 from sentence_transformers import SentenceTransformer
 from hybrid_search import HybridConfig, HybridSignals, reciprocal_rank_fusion
+from multicrop import load_multicrop_index, search_multicrop
 from ocr_index import OCRSignals
 from rerank import (
     RerankConfig, SIGLIP2_BASE_MODEL, SIGLIP2_MODEL, Siglip2Reranker
@@ -83,6 +84,14 @@ class MultilingualFaissEngine:
             load_siglip2_index(index_dir, self.index.ntotal, reranker.model_name)
             if reranker is not None else None
         )
+        crop_state = (
+            load_multicrop_index(
+                index_dir / "siglip2-crops", self.index.ntotal, reranker.model_name
+            )
+            if reranker is not None else None
+        )
+        self.multicrop_index = crop_state[0] if crop_state is not None else None
+        self.multicrop_manifest = crop_state[1] if crop_state is not None else None
         self.query_ensemble = query_ensemble
 
     def encode(self, query: str) -> np.ndarray:
@@ -103,7 +112,8 @@ class MultilingualFaissEngine:
     def search(self, query: str, top_k: int, candidate_k: int = 5000,
                per_video: int = 3, min_time_gap: float = 2.0,
                quality: bool = True, use_ocr: bool = True,
-               use_hybrid: bool = True) -> list[dict[str, object]]:
+               use_hybrid: bool = True,
+               use_crops: bool = False) -> list[dict[str, object]]:
         if top_k < 1 or top_k > MAX_ANSWERS:
             raise ValueError(f"top_k must be in [1, {MAX_ANSWERS}]")
         query = query.strip()
@@ -117,6 +127,8 @@ class MultilingualFaissEngine:
         ranked_ids, ranked_scores = fuse_query_rankings(
             rankings, limit=candidate_k
         )
+        crop_by_id: dict[int, int] = {}
+        siglip_vector = None
         if self.siglip2_index is not None and self.reranker is not None and quality:
             siglip_vector = self.reranker.encode_text(query)
             _, siglip_values = self.siglip2_index.search(siglip_vector, candidate_k)
@@ -125,6 +137,18 @@ class MultilingualFaissEngine:
                 [ranked_ids, siglip_ids],
                 weights=[1.0, SIGLIP2_GLOBAL_WEIGHT],
                 limit=candidate_k,
+            )
+        if (
+            use_crops and quality and self.multicrop_index is not None
+            and self.reranker is not None
+        ):
+            if siglip_vector is None:
+                siglip_vector = self.reranker.encode_text(query)
+            crop_ids, _, crop_by_id = search_multicrop(
+                self.multicrop_index, siglip_vector, candidate_k
+            )
+            ranked_ids, ranked_scores = fuse_query_rankings(
+                [ranked_ids, crop_ids], weights=[1.0, 1.0], limit=candidate_k
             )
         top_labels: list[str] = []
         if self.hybrid is not None and use_hybrid:
@@ -182,8 +206,11 @@ class MultilingualFaissEngine:
         )
         for row in selected:
             row["matched_objects"] = top_labels
+            global_id = int(row["_global_id"])
+            if global_id in crop_by_id:
+                row["crop_index"] = crop_by_id[global_id]
             row["_ocr_rank"] = ocr_ranks.get(
-                int(row["_global_id"]), len(ocr_ranks) + 1
+                global_id, len(ocr_ranks) + 1
             )
         if use_image_rerank:
             selected = self.reranker.rerank(query, selected)
@@ -254,6 +281,9 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
             "query_ensemble": getattr(search_engine, "query_ensemble", False),
             "siglip2_vectors": int(getattr(
                 getattr(search_engine, "siglip2_index", None), "ntotal", 0
+            )),
+            "siglip2_crop_vectors": int(getattr(
+                getattr(search_engine, "multicrop_index", None), "ntotal", 0
             )),
             "reranker": (
                 getattr(search_engine.reranker, "model_name", SIGLIP2_MODEL)

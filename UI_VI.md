@@ -13,6 +13,7 @@ Open http://127.0.0.1:7860.
 - `Nhanh`: organizer CLIP retrieval for rapid exploration.
 - `Chat luong`: global CLIP + SigLIP2 fusion, bounded OCR for KIS, and task-specific ranking.
 - If the complete global SigLIP2 index is unavailable, quality mode falls back to on-demand SigLIP2 image reranking.
+- The multi-crop index is loaded only when its manifest is complete; partial builds are safely ignored.
 
 The status panel should show 177,321 CLIP vectors and 177,321 SigLIP2 vectors. OCR is resumable and may show a smaller number until indexing completes.
 
@@ -36,7 +37,7 @@ TRAKE: video_id,frame_idx_1,...,frame_idx_N
 
 ## QA behavior
 
-Automatic QA first retrieves 100 candidate frames using a scene-only rewrite, the original question, and fair answer-type hypotheses. It adds neighboring frames around the candidates Qwen actually inspects, unloads retrieval models, and loads `Qwen/Qwen2.5-VL-3B-Instruct` in NF4 4-bit. Answers stay in the question language and are capped at 100 characters.
+Automatic QA first retrieves 100 candidate frames using a scene-only rewrite, the original question, fair answer-type hypotheses, and best-region multi-crop search. It adds neighboring frames and the selected high-resolution crop around the candidates Qwen actually inspects, unloads retrieval models, and loads `Qwen/Qwen2.5-VL-3B-Instruct` in NF4 4-bit. Answers stay in the question language and are capped at 100 characters.
 
 Selected-frame QA performs no hidden image search: Qwen receives only the image(s) selected by the user.
 

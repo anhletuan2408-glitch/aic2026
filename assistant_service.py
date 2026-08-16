@@ -69,7 +69,9 @@ class AssistantService:
         submission_rows = self._qa_submission_rows(rows, candidates)
         selections = [
             {"video_id": row["video_id"], "frame_idx": row["frame_idx"],
-             "keyframe_no": row["keyframe_no"], "_source_index": index}
+             "keyframe_no": row["keyframe_no"],
+             **({"crop_index": row["crop_index"]} if "crop_index" in row else {}),
+             "_source_index": index}
             for index, row in enumerate(rows[:candidates])
         ]
         predicted = self._answer_selected_locked(question, selections)
@@ -92,15 +94,18 @@ class AssistantService:
         rows = self.engine.search(
             scene_query, 100, 10000, 5, 1.5,
             getattr(self.engine, "reranker", None) is not None, False, False,
+            use_crops=True,
         )
         if scene_query.casefold() != question.casefold():
             original_rows = self.engine.search(
-                question, 100, 10000, 5, 1.5, False, False, False
+                question, 100, 10000, 5, 1.5, True, False, False,
+                use_crops=True,
             )
             rows = fuse_qa_candidate_rows(rows, original_rows)
         hypothesis_rankings = [
             self.engine.search(
-                variant, 100, 10000, 5, 1.5, False, False, False
+                variant, 100, 10000, 5, 1.5, True, False, False,
+                use_crops=True,
             )
             for variant in qa_answer_hypothesis_queries(question)
         ]
@@ -155,7 +160,14 @@ class AssistantService:
                 video_id = str(selected["video_id"])
                 frame_idx = int(selected["frame_idx"])
                 keyframe_no = int(selected["keyframe_no"])
-                images = context_images(self.keyframes, video_id, keyframe_no)
+                crop_index = (
+                    int(selected["crop_index"])
+                    if "crop_index" in selected else None
+                )
+                images = context_images(
+                    self.keyframes, video_id, keyframe_no,
+                    crop_index=crop_index,
+                )
                 if not images:
                     continue
                 try:

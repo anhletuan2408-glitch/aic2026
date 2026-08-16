@@ -19,10 +19,11 @@ Vietnamese query
   -> task-aware rewrite / ordered-event split
   -> exact FAISS retrieval over organizer CLIP vectors
   + exact FAISS retrieval over global SigLIP2 vectors
+  + exact FAISS retrieval over five overlapping SigLIP2 region crops
   + one bounded OCR wildcard (KIS only)
   -> Top-k-aware fusion and soft video diversity
   -> KIS: ranked <video_id>,<frame_idx>
-  -> QA: scene + answer-hypothesis candidate retrieval -> Qwen2.5-VL-3B 4-bit
+  -> QA: full-frame/region candidates -> Qwen2.5-VL-3B 4-bit on context + crop
   -> TRAKE: per-event fusion -> same-video k-best dynamic programming
   -> validated headerless CSV files -> submission.zip
 ```

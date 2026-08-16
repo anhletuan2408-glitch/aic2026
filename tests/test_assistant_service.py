@@ -10,7 +10,7 @@ class FakeEngine:
     device = "cpu"
     reranker = None
     model = object()
-    def search(self, *args):
+    def search(self, *args, **kwargs):
         return [{"video_id":"L21_V001","frame_idx":345,"keyframe_no":12,"score":.5}]
 
 
@@ -82,6 +82,7 @@ class AssistantServiceTests(TestCase):
         for call in self.engine.search.call_args_list:
             self.assertFalse(call.args[-2])
             self.assertFalse(call.args[-1])
+            self.assertTrue(call.kwargs["use_crops"])
 
     def test_answer_requires_selected_frames(self):
         with self.assertRaises(ValueError):

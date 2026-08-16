@@ -9,6 +9,7 @@ Organizer videos/keyframes/features
   -> metadata.sqlite3 (global_id, video_id, keyframe_no, frame_idx, time)
   -> organizer CLIP vectors -> exact FAISS IndexFlatIP
   -> SigLIP2 Large-384 keyframe encoding -> exact FAISS IndexIDMap2
+  -> five overlapping SigLIP2 region crops per keyframe -> resumable FAISS index
   -> resumable OCR FTS5 index
 ```
 
@@ -43,10 +44,11 @@ Vietnamese question
   + retain the original question
   + generate answer-type hypotheses (colors, counts, sports, headwear, names)
   -> retrieve 100 visual candidates
+  -> fuse full-frame and best-region crop rankings
   -> fairly round-robin hypothesis rankings; do not bias the first answer class
   -> add temporal neighbor frames around the candidates Qwen will inspect
   -> unload retrieval models
-  -> Qwen2.5-VL-3B-Instruct NF4 answers the top selected frames sequentially
+  -> Qwen2.5-VL-3B-Instruct NF4 sees temporal context plus the selected crop
   -> clean answers to <=100 characters
   -> consensus-rank <video_id>,<frame_idx>,<answer> rows
 ```
@@ -54,6 +56,16 @@ Vietnamese question
 The UI also supports selected-frame QA: the user chooses one or more retrieved images and Qwen answers only those images. This is the safest live workflow when automatic frame recall is uncertain.
 
 The local benchmark reports frame recall separately from exact answer accuracy. This prevents a wrong frame from being mistaken for a Qwen reasoning failure.
+
+Build or resume the crop representation offline with:
+
+```powershell
+.\run_multicrop_index.ps1 -Device cuda -BatchSize 6
+```
+
+Partial crop state is deliberately ignored by the Web UI. It becomes active only
+after all frames and all five crops are indexed, preventing optimistic benchmarks
+against an incomplete distractor set.
 
 ## 3. TRAKE
 

@@ -1,19 +1,44 @@
 from __future__ import annotations
 
 import sqlite3
+import io
 import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
 
+from PIL import Image
+
 from qna_search import (
-    clean_answer, compose_qa_hypothesis_candidates, expand_qa_context_rows,
+    clean_answer, compose_qa_hypothesis_candidates, context_images,
+    expand_qa_context_rows,
     fuse_qa_candidate_rows,
     rank_qa_answers,
 )
 
 
 class QnaSearchTests(unittest.TestCase):
+    def test_context_images_adds_selected_region_after_full_frame(self) -> None:
+        source = Image.new("RGB", (100, 80), "red")
+        payload = io.BytesIO()
+        source.save(payload, format="JPEG")
+        source.close()
+
+        class Store:
+            def get_bytes(self, video_id: str, keyframe_no: int) -> bytes:
+                if keyframe_no != 2:
+                    raise KeyError(keyframe_no)
+                return payload.getvalue()
+
+        images = context_images(Store(), "V", 2, radius=1, crop_index=4)
+        try:
+            self.assertEqual(
+                [image.size for image in images], [(100, 80), (60, 48)]
+            )
+        finally:
+            for image in images:
+                image.close()
+
     def test_hypothesis_composition_protects_visual_prefix_and_heads(self) -> None:
         def row(video: str, frame: int) -> dict[str, object]:
             return {"video_id": video, "frame_idx": frame}

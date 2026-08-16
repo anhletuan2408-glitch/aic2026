@@ -15,6 +15,7 @@ from PIL import Image
 from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2_5_VLForConditionalGeneration
 
 from submission import QAAnswer, write_qa_submission
+from multicrop import crop_image
 from text_encoding import repair_utf8_mojibake
 from web_app import KeyframeStore
 if TYPE_CHECKING:
@@ -247,7 +248,8 @@ class QwenVLAnswerer:
 
 
 def context_images(
-    store: KeyframeStore, video_id: str, keyframe_no: int, radius: int = 1
+    store: KeyframeStore, video_id: str, keyframe_no: int, radius: int = 1,
+    crop_index: int | None = None,
 ) -> list[Image.Image]:
     images: list[Image.Image] = []
     for number in range(max(1, keyframe_no - radius), keyframe_no + radius + 1):
@@ -255,7 +257,10 @@ def context_images(
             payload = store.get_bytes(video_id, number)
         except (KeyError, FileNotFoundError):
             continue
-        images.append(Image.open(io.BytesIO(payload)).convert("RGB"))
+        image = Image.open(io.BytesIO(payload)).convert("RGB")
+        images.append(image)
+        if number == keyframe_no and crop_index is not None:
+            images.append(crop_image(image, crop_index))
     return images
 
 
