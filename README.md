@@ -1,91 +1,60 @@
-# AIC 2026 Batch 1 - FAISS baseline
+# AIC 2026 multimedia retrieval assistant
 
-For the current competitive Vietnamese hybrid pipeline and its three runtime
-profiles, see [HYBRID.md](HYBRID.md) and [UI_VI.md](UI_VI.md).
+Vietnamese-first retrieval and submission tooling for the three preliminary tasks: Textual KIS, visual Q&A, and TRAKE. The runtime is designed for a GPU with less than 4 GB VRAM and keeps the organizer data in `E:\AIC2026`.
 
-This project builds an exact cosine-similarity index from the organizer-provided
-OpenAI CLIP ViT-B/32 keyframe vectors. It does not re-encode videos or keyframes.
-The text encoder uses OpenCLIP's `ViT-B-32-quickgelu` model identifier because
-the original OpenAI checkpoint uses QuickGELU.
+See [PRELIMINARY.md](PRELIMINARY.md) for the complete pipeline, [UI_VI.md](UI_VI.md) for the Web UI, and [SUBMISSION_GUIDE.md](SUBMISSION_GUIDE.md) for Codabench packaging.
 
 ## Verified dataset
 
-- 873 videos
-- 177,321 keyframe vectors
-- Every feature file has shape `(N, 512)` and dtype `float16`
-- Every feature row matches one `map-keyframes` CSV row
+- 873 videos and 177,321 keyframes
+- Organizer CLIP ViT-B/32 vectors: 512-dimensional `float16`
+- Global SigLIP2 Large-384 index: 177,321 vectors, 1024 dimensions
 - `npy[n - 1]` maps to image `NNN.jpg` and CSV keyframe number `n`
-- The submission frame is CSV `frame_idx`, not the JPG number
+- Submissions use CSV `frame_idx`, not the JPG/keyframe number
 
-## Data layout
-
-```text
-data/
-  clip-features-32/*.npy
-  map-keyframes/*.csv
-  media-info/*.json
-```
-
-The keyframe and video ZIP files can remain compressed while building the index.
-
-## Pipeline
+## Current pipeline
 
 ```text
-Vietnamese query + English/query variants
-  -> OpenAI CLIP ViT-B/32 QuickGELU text encoder
-  -> normalized 512-dimensional query vector
-  -> exact FAISS IndexFlatIP search
-  -> SQLite global_id mapping
-  -> limit near-duplicate results per video
-  -> diagnostic ranked CSV + KIS submission CSV
+Vietnamese query
+  -> task-aware rewrite / ordered-event split
+  -> exact FAISS retrieval over organizer CLIP vectors
+  + exact FAISS retrieval over global SigLIP2 vectors
+  + one bounded OCR wildcard (KIS only)
+  -> Top-k-aware fusion and soft video diversity
+  -> KIS: ranked <video_id>,<frame_idx>
+  -> QA: scene + answer-hypothesis candidate retrieval -> Qwen2.5-VL-3B 4-bit
+  -> TRAKE: per-event fusion -> same-video k-best dynamic programming
+  -> validated headerless CSV files -> submission.zip
 ```
 
-## Environment
+FAISS is the exact in-memory vector search engine. Replacing it with Qdrant, pgvector, or Chroma does not improve embedding quality or ranking accuracy by itself.
 
-Create a dedicated virtual environment and install the CPU dependencies. A CUDA
-PyTorch build can be substituted later if a compatible NVIDIA GPU is available.
+## Run
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+cd E:\AIC2026
+powershell -ExecutionPolicy Bypass -File .\run_all.ps1
+.\status.ps1
 ```
 
-`open_clip` downloads the OpenAI ViT-B/32 weights on the first query.
+Open http://127.0.0.1:7860. The UI supports free queries and imported organizer-style query packages.
 
-## Build the index
-
-Run from this directory:
+## Build and benchmark
 
 ```powershell
 .\.venv\Scripts\python.exe build_index.py --data-dir data --output-dir index
+.\.venv\Scripts\python.exe evaluate_suite.py ground_truth\local.jsonl outputs\predictions --output outputs\benchmark.json
 ```
 
-Expected raw vector memory in FAISS float32 format is approximately 0.338 GiB.
+The repository also contains `benchmark_kis_live.py`, `benchmark_candidates.py`, and `tune_dense_fusion.py` for ablation and ground-truth calibration.
 
-## Search
+## Current local evidence
 
-Include an English translation as a query variant because the original OpenAI
-CLIP text encoder generally retrieves English wording more reliably.
+The local set is tiny (10 KIS, 6 QA, 1 TRAKE), several ranges contain one frame, and it is not a qualification guarantee.
 
-```powershell
-.\.venv\Scripts\python.exe search.py `
-  "Một người đàn ông mặc áo xanh đang phát biểu trước đám đông" `
-  --variant "A man in a blue shirt speaking in front of a crowd" `
-  --top-k 100 `
-  --output outputs\query_001.csv
-```
+- KIS: `0.42` Final Score after CLIP/SigLIP2 calibration plus one OCR wildcard.
+- QA candidate/frame diagnostic: `0.2333`; two of six exact local frames are in the top 100. Exact QA remains `0.0` until both retrieval and answer matching improve.
+- TRAKE: `0.40` after global SigLIP2 event fusion and same-video dynamic programming.
+- Full unit suite: 104 tests.
 
-Outputs:
-
-- `outputs/query_001.csv`: scores and diagnostic metadata
-- `outputs/query_001_submission.csv`: `<video_id>,<frame_idx>` rows for KIS
-
-## Next improvements
-
-1. Add keyframe previews without extracting every image.
-2. Add temporal-neighbor diversification and video-level aggregation.
-3. Rerank candidates with OCR, objects, metadata, or a vision-language model.
-4. For Q&A, inspect a dense clip around each candidate timestamp.
-5. For TRAKE, retrieve each event and enforce increasing time with dynamic
-   programming before refining against dense frames from the source video.
+Object and metadata signals remain available, but their default fusion weights are zero because the current ablation showed that noisy unconditional fusion reduced the score.

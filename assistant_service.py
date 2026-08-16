@@ -14,7 +14,7 @@ from qna_search import (
     fuse_qa_candidate_rows, rank_qa_answers,
 )
 from retrieval_enhancements import (
-    qa_answer_hypothesis_queries, qa_hypothesis_priority_depth,
+    qa_answer_hypothesis_queries,
     qa_retrieval_query,
 )
 from rerank import Siglip2Reranker
@@ -106,8 +106,7 @@ class AssistantService:
         ]
         if hypothesis_rankings:
             rows = compose_qa_hypothesis_candidates(
-                rows, hypothesis_rankings, [],
-                first_hypothesis_depth=qa_hypothesis_priority_depth(question),
+                rows, hypothesis_rankings, [], hypothesis_depth=10,
             )
         return rows
     def _qa_submission_rows(

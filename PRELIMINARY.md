@@ -1,104 +1,99 @@
-# AIC 2026 preliminary-round pipeline
+# Preliminary-round pipeline
 
-This implementation follows the three preliminary-round query types and keeps
-FAISS retrieval as the first-stage candidate generator.
+The system handles all three AIC preliminary tasks while staying below the 4 GB VRAM target by never keeping SigLIP2 retrieval and Qwen-VL answer generation active on the GPU at the same time.
 
-## Shared retrieval pipeline
+## Shared data and retrieval
 
 ```text
-Vietnamese query + English/query variants
-  -> OpenAI CLIP ViT-B/32 QuickGELU text embedding
-  -> L2-normalized 512-dimensional vector
-  -> FAISS IndexFlatIP over 177,321 supplied keyframe vectors
-  -> global_id lookup in SQLite
-  -> map-keyframes frame_idx conversion
-  -> task-specific reranking and output
+Organizer videos/keyframes/features
+  -> metadata.sqlite3 (global_id, video_id, keyframe_no, frame_idx, time)
+  -> organizer CLIP vectors -> exact FAISS IndexFlatIP
+  -> SigLIP2 Large-384 keyframe encoding -> exact FAISS IndexIDMap2
+  -> resumable OCR FTS5 index
 ```
 
-The organizer-provided keyframe feature at array position `n - 1` maps to CSV
-row `n`. The submitted frame is `frame_idx`, not the keyframe JPG number.
+At query time, Vietnamese text is embedded directly. CLIP and SigLIP2 rankings are fused in rank space. The calibrated KIS SigLIP2 weight is `1.5`. A soft diversity prefix covers multiple videos without deleting deep same-video recall.
 
-## Textual KIS
+### Why FAISS
 
-Run exact FAISS retrieval and export at most 100 ranked answers:
+FAISS is not the weak part of the system: both current indexes perform exact inner-product search. Qdrant, pgvector, and Chroma are useful for distributed serving, filtering, and persistence, but moving the same vectors into them will return the same neighbors. Accuracy work belongs in embeddings, query rewriting, signal calibration, reranking, and task-specific alignment.
+
+## 1. Textual KIS
+
+```text
+full Vietnamese query + lightweight variants
+  -> CLIP top 10,000
+  + global SigLIP2 top 10,000
+  -> calibrated rank fusion
+  -> keep visual winner at rank 1
+  -> optionally insert only the strongest OCR hit at rank 2
+  -> soft per-video/time diversity for the first five rows
+  -> preserve remaining dense order up to 100 answers
+```
+
+Object-label and metadata retrieval are retained for diagnostics but disabled by default. On the local ablation, dense CLIP/SigLIP2 scored `0.34`, unconditional OCR RRF scored `0.30`, and bounded OCR scored `0.42`.
+
+## 2. Visual Q&A
+
+QA is not a text-search result disguised as an answer. It has separate retrieval and answering phases:
+
+```text
+Vietnamese question
+  -> remove the unknown answer slot to obtain a scene query
+  + retain the original question
+  + generate answer-type hypotheses (colors, counts, sports, headwear, names)
+  -> retrieve 100 visual candidates
+  -> fairly round-robin hypothesis rankings; do not bias the first answer class
+  -> add temporal neighbor frames around the candidates Qwen will inspect
+  -> unload retrieval models
+  -> Qwen2.5-VL-3B-Instruct NF4 answers the top selected frames sequentially
+  -> clean answers to <=100 characters
+  -> consensus-rank <video_id>,<frame_idx>,<answer> rows
+```
+
+The UI also supports selected-frame QA: the user chooses one or more retrieved images and Qwen answers only those images. This is the safest live workflow when automatic frame recall is uncertain.
+
+The local benchmark reports frame recall separately from exact answer accuracy. This prevents a wrong frame from being mistaken for a Qwen reasoning failure.
+
+## 3. TRAKE
+
+```text
+ordered event description
+  -> split into N events
+  -> CLIP + global SigLIP2 retrieval for every event
+  -> identify videos jointly supported by all events
+  -> conditioned search over all indexed frames in each candidate video
+  -> k-best dynamic programming with strictly increasing frame IDs
+  -> export up to 100 same-video event paths
+```
+
+Every output row contains exactly N frame IDs in event order. The submitted IDs are `frame_idx` values.
+
+## Submission and scoring
+
+Each query file is headerless and contains at most 100 rows:
+
+```text
+KIS:   <video_id>,<frame_idx>
+QA:    <video_id>,<frame_idx>,<answer>
+TRAKE: <video_id>,<frame_idx_1>,...,<frame_idx_N>
+```
+
+The UI imports a ZIP of UTF-8 `.txt` queries, lets the user choose/correct each task type, saves ranked results, and exports `submission.zip` with `submission/<query-name>.csv`.
+
+The scorer averages the best R-Score at ranks 1, 5, 20, 50, and 100. Therefore the pipeline explicitly protects rank 1 and rank 5 instead of maximizing recall alone.
+
+## Reproduce local benchmarks
 
 ```powershell
-.\.venv\Scripts\python.exe search_kis.py `
-  "Một người đàn ông mặc áo xanh đang phát biểu trước đám đông" `
-  --variant "A man in a blue shirt speaking in front of a crowd" `
-  --index-dir index `
-  --candidate-k 5000 `
-  --top-k 100 `
-  --per-video 3 `
-  --min-time-gap 2.0 `
-  --output outputs\query_001.csv
+# KIS live ablation
+.\.venv\Scripts\python.exe benchmark_kis_live.py E:\AIC2026\ground_truth\local.jsonl --base-url http://127.0.0.1:7860 --quality --hybrid --ocr --report E:\AIC2026\outputs\kis.json
+
+# QA frame-candidate recall without loading Qwen
+.\.venv\Scripts\python.exe benchmark_candidates.py E:\AIC2026\ground_truth\local.jsonl --base-url http://127.0.0.1:7860 --force --report E:\AIC2026\outputs\qa-candidates.json
+
+# Official-format aggregate
+.\.venv\Scripts\python.exe evaluate_suite.py E:\AIC2026\ground_truth\local.jsonl E:\AIC2026\outputs\predictions --output E:\AIC2026\outputs\benchmark.json
 ```
 
-Outputs:
-
-- `outputs/query_001.csv`: diagnostic ranking with similarity and metadata.
-- `outputs/query_001_submission.csv`: `<video_id>,<frame_id>` rows.
-
-Selection keeps the best candidate from different videos near the top, then
-adds second and third candidates in later rounds. Frames closer than
-`--min-time-gap` within the same video are treated as near-duplicates.
-
-## Q&A
-
-Required output:
-
-```text
-<video_id>,<frame_id>,<answer>
-```
-
-Two task-specific flows are implemented:
-
-1. **Selected frame:** the user chooses a KIS result and Qwen answers that exact frame without another search.
-2. **Automatic submission:** retrieve 100 candidates, expose three frames per promising video to SigLIP2, preserve early video diversity, run Qwen sequentially on the top 5/8/10 frames, and consensus-rank up to 100 answer/frame combinations.
-3. CLIP/SigLIP and Qwen are swapped serially so the quality pipeline fits the 4 GB VRAM target.
-## TRAKE
-
-Required output:
-
-```text
-<video_id>,<frame_id_1>,...,<frame_id_n>
-```
-
-The query is split into ordered events. Each event retrieves a candidate pool with FAISS. A k-best dynamic program then keeps globally ordered paths per video, using retrieval similarity and temporal separation, and exports up to 100 event sequences.
-## Local scoring
-
-`submission.py` implements KIS, Q&A, and TRAKE R-Scores plus the official
-average of `R@1`, `R@5`, `R@20`, `R@50`, and `R@100`.
-
-Ground-truth JSON examples:
-
-```json
-{"video_id": "L01_V001", "start": 500, "end": 510}
-```
-
-```json
-{
-  "video_id": "L05_V005",
-  "start": 800,
-  "end": 900,
-  "answers": ["màu xanh", "blue"]
-}
-```
-
-```json
-{
-  "video_id": "L10_V010",
-  "moments": [[95, 105], [145, 155], [195, 205], [245, 255]]
-}
-```
-
-Score one ranked CSV, or use `evaluate_suite.py` with the unified JSONL schema in `ground_truth/README.md`:
-
-```powershell
-.\.venv\Scripts\python.exe evaluate.py kis `
-  outputs\query_001_submission.csv ground_truth\query_001.json
-```
-
-The official-mode local Q&A scorer uses exact answer matching against the accepted
-ground-truth strings. See [SUBMISSION_GUIDE.md](SUBMISSION_GUIDE.md) and run
-`package_submission.py` before using a Codabench attempt.
+Current smoke results are KIS `0.42`, QA frame diagnostic `0.2333`, exact QA `0.0`, and TRAKE `0.40`. The set is too small to estimate qualification probability; expand it before further weight tuning.

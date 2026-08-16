@@ -11,6 +11,28 @@ import numpy as np
 from search import choose_device, encode_queries, load_metadata
 from submission import KISAnswer, MAX_ANSWERS, write_kis_submission
 
+def protect_signal_ids(
+    base_ids: list[int], signal_ids: list[int], max_protected: int = 1,
+) -> list[int]:
+    """Keep the dense winner, expose bounded signal hits, then preserve recall."""
+    if not base_ids or max_protected <= 0:
+        return list(base_ids)
+    output = [base_ids[0]]
+    seen = {base_ids[0]}
+    for global_id in signal_ids:
+        if global_id in seen:
+            continue
+        output.append(global_id)
+        seen.add(global_id)
+        if len(output) > max_protected:
+            break
+    for ranking in (base_ids[1:], signal_ids):
+        for global_id in ranking:
+            if global_id not in seen:
+                seen.add(global_id)
+                output.append(global_id)
+    return output
+
 
 def bounded_positive_int(value: str, maximum: int | None = None) -> int:
     parsed = int(value)
@@ -58,7 +80,7 @@ def select_candidates(
     per_video_limit: int,
     min_time_gap: float,
     video_pool_limit: int | None = None,
-    diverse_prefix: int = 20,
+    diverse_prefix: int = 5,
 ) -> list[dict[str, object]]:
     if min_time_gap < 0:
         raise ValueError("min_time_gap must be non-negative")
@@ -140,7 +162,7 @@ def select_candidates(
     return selected
 
 def protect_signal_rows(
-    rows: list[dict[str, object]], max_protected: int = 4,
+    rows: list[dict[str, object]], max_protected: int = 1,
     max_ocr_rank: int = 10,
 ) -> list[dict[str, object]]:
     """Keep the visual winner, then expose a bounded exact-text prefix."""

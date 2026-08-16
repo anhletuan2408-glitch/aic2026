@@ -1,13 +1,54 @@
+import io
 import unittest
 import threading
 
 import numpy as np
 import torch
+from PIL import Image
 
 from rerank import RerankConfig, Siglip2Reranker, fuse_rerank_scores
 
 
 class RerankFusionTests(unittest.TestCase):
+    def test_half_precision_image_features_are_fused_with_float_text(self):
+        class Inputs(dict):
+            def to(self, _device):
+                return self
+
+        class Processor:
+            def __call__(self, text=None, images=None, **_kwargs):
+                if text is not None:
+                    return Inputs(count=len(text))
+                return Inputs(count=len(images))
+
+        class Model:
+            def get_text_features(self, count, **_kwargs):
+                return torch.tensor([[3.0, 4.0]]).repeat(count, 1)
+
+            def get_image_features(self, count, **_kwargs):
+                return torch.tensor(
+                    [[3.0, 4.0]], dtype=torch.float16
+                ).repeat(count, 1)
+
+        payload = io.BytesIO()
+        Image.new("RGB", (2, 2), "red").save(payload, format="JPEG")
+        frames = type(
+            "Frames", (), {"get_bytes": lambda *_args: payload.getvalue()}
+        )()
+        reranker = Siglip2Reranker.__new__(Siglip2Reranker)
+        reranker.device = "cpu"
+        reranker.processor = Processor()
+        reranker.model = Model()
+        reranker.keyframes = frames
+        reranker.config = RerankConfig(batch_size=1)
+        reranker._lock = threading.Lock()
+
+        output = reranker.rerank(
+            "red square",
+            [{"rank": 1, "score": .5, "video_id": "V", "keyframe_no": 1}],
+        )
+        self.assertAlmostEqual(output[0]["siglip2_score"], 1.0, places=3)
+
     def test_text_encoder_returns_normalized_float32_vectors(self):
         class Inputs(dict):
             def to(self, _device):

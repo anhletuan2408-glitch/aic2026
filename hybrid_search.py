@@ -12,8 +12,8 @@ from sentence_transformers import SentenceTransformer
 @dataclass(frozen=True)
 class HybridConfig:
     rrf_k: int = 60
-    object_weight: float = 0.45
-    metadata_weight: float = 0.18
+    object_weight: float = 0.0
+    metadata_weight: float = 0.0
     temporal_weight: float = 0.20
     ocr_weight: float = 1.10
     object_labels: int = 12

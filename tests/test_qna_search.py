@@ -24,9 +24,27 @@ class QnaSearchTests(unittest.TestCase):
         self.assertEqual(
             [(item["video_id"], item["frame_idx"]) for item in output],
             [("P", 1), ("P", 2), ("P", 3), ("H1", 1),
-             ("H2", 1), ("R", 1), ("P", 4), ("H1", 2)],
+             ("H2", 1), ("H1", 2), ("R", 1), ("P", 4)],
         )
         self.assertEqual([item["rank"] for item in output], list(range(1, 9)))
+
+    def test_hypothesis_composition_round_robins_answer_depth(self) -> None:
+        def row(video: str, frame: int) -> dict[str, object]:
+            return {"video_id": video, "frame_idx": frame}
+        hypotheses = [
+            [row("one", index) for index in range(20)],
+            [row("five", index) for index in range(20)],
+        ]
+        output = compose_qa_hypothesis_candidates(
+            [row("scene", 1)], hypotheses, [], limit=15,
+            primary_prefix=1, hypothesis_depth=6,
+        )
+        keys = [(item["video_id"], item["frame_idx"]) for item in output]
+        self.assertEqual(keys[:5], [
+            ("scene", 1), ("one", 0), ("five", 0),
+            ("one", 1), ("five", 1),
+        ])
+        self.assertIn(("five", 5), keys)
 
     def test_context_expansion_preserves_prefix_then_adds_neighbors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

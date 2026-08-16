@@ -4,10 +4,21 @@ import unittest
 
 import numpy as np
 
-from search_kis import diversify_ranked_rows, protect_signal_rows, select_candidates
+from search_kis import (
+    diversify_ranked_rows, protect_signal_ids, protect_signal_rows,
+    select_candidates,
+)
 
 
 class CandidateSelectionTests(unittest.TestCase):
+    def test_signal_ids_use_bounded_prefix_then_preserve_dense_order(self) -> None:
+        output = protect_signal_ids(
+            [10, 20, 30, 40], [90, 80, 30, 70, 60], max_protected=3
+        )
+        self.assertEqual(output[:4], [10, 90, 80, 30])
+        self.assertEqual(output[4:7], [20, 40, 70])
+        self.assertEqual(len(output), len(set(output)))
+
     def test_round_robin_diversifies_videos_and_time(self) -> None:
         metadata = {
             1: {

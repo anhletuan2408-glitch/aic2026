@@ -31,9 +31,6 @@ def qa_retrieval_query(question: str) -> str:
     return cleaned if len(cleaned.split()) >= 3 else original
 
 
-def qa_hypothesis_priority_depth(question: str) -> int:
-    """Reserve recall budget for the dominant count hypothesis."""
-    return 90 if re.search(r"\bbao nhiêu\b|\bhow many\b", question.casefold()) else 0
 
 
 def qa_answer_hypothesis_queries(question: str) -> list[str]:

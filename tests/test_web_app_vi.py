@@ -60,12 +60,14 @@ class WebAppVietnameseTests(unittest.TestCase):
 
             def __init__(self):
                 self.queries = []
+                self.rerank_calls = 0
 
             def encode_text(self, query):
                 self.queries.append(query)
                 return np.asarray([[1.0, 0.0]], dtype=np.float32)
 
             def rerank(self, _query, rows):
+                self.rerank_calls += 1
                 return rows
 
         engine = MultilingualFaissEngine.__new__(MultilingualFaissEngine)
@@ -95,10 +97,13 @@ class WebAppVietnameseTests(unittest.TestCase):
              patch("web_app_vi.protect_signal_rows", side_effect=lambda rows: rows):
             quality = engine.search("motorcycle", 2, candidate_k=3, quality=True)
             fast = engine.search("motorcycle", 2, candidate_k=3, quality=False)
+            engine.siglip2_index = None
+            engine.search("motorcycle", 2, candidate_k=3, quality=True)
 
         self.assertEqual(quality[0]["frame_idx"], 1)
         self.assertEqual(fast[0]["frame_idx"], 0)
         self.assertEqual(engine.reranker.queries, ["motorcycle"])
+        self.assertEqual(engine.reranker.rerank_calls, 1)
 
     def test_global_siglip_index_requires_complete_matching_manifest(self):
         with tempfile.TemporaryDirectory() as directory:

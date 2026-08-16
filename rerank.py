@@ -111,7 +111,9 @@ class Siglip2Reranker:
             ]
             inputs = self.processor(images=images, return_tensors="pt").to(self.device)
             with torch.inference_mode():
-                features = self._tensor(self.model.get_image_features(**inputs))
+                features = self._tensor(
+                    self.model.get_image_features(**inputs)
+                ).float()
                 features = features / features.norm(dim=-1, keepdim=True)
                 scores = (features @ text.T).squeeze(1).float().cpu().numpy()
             all_scores.append(scores)

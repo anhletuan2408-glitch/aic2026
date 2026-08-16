@@ -18,7 +18,10 @@ from retrieval_enhancements import (
     expand_query, fuse_query_rankings,
 )
 from search import choose_device, load_metadata
-from search_kis import diversify_ranked_rows, protect_signal_rows, select_candidates
+from search_kis import (
+    diversify_ranked_rows, protect_signal_ids, protect_signal_rows,
+    select_candidates,
+)
 from submission import MAX_ANSWERS
 from web_app import KeyframeStore
 from assistant_service import AssistantService
@@ -26,6 +29,7 @@ from query_package import QueryPackage
 from ground_truth_store import GroundTruthStore
 
 MODEL_NAME = "sentence-transformers/clip-ViT-B-32-multilingual-v1"
+SIGLIP2_GLOBAL_WEIGHT = 1.5
 
 
 def load_siglip2_index(index_dir: Path, expected_frames: int,
@@ -118,13 +122,16 @@ class MultilingualFaissEngine:
             _, siglip_values = self.siglip2_index.search(siglip_vector, candidate_k)
             siglip_ids = [int(value) for value in siglip_values[0] if value >= 0]
             ranked_ids, ranked_scores = fuse_query_rankings(
-                [ranked_ids, siglip_ids], weights=[1.0, 1.0], limit=candidate_k
+                [ranked_ids, siglip_ids],
+                weights=[1.0, SIGLIP2_GLOBAL_WEIGHT],
+                limit=candidate_k,
             )
         top_labels: list[str] = []
         if self.hybrid is not None and use_hybrid:
             text_vector = self.hybrid.encode(query)
-            object_ids, matched_labels = self.hybrid.object_ranking(
-                text_vector, self.hybrid_config
+            object_ids, matched_labels = (
+                self.hybrid.object_ranking(text_vector, self.hybrid_config)
+                if self.hybrid_config.object_weight > 0.0 else ([], [])
             )
             ocr_ids = (
                 self.ocr.ranking(query)
@@ -135,11 +142,23 @@ class MultilingualFaissEngine:
             video_by_id = {
                 global_id: str(row["video_id"]) for global_id, row in metadata.items()
             }
-            ranked_ids, ranked_scores = reciprocal_rank_fusion(
-                ranked_ids, object_ids, video_by_id,
-                self.hybrid.metadata_video_ranks(text_vector), self.hybrid_config,
-                ocr_ids=ocr_ids,
+            metadata_ranks = (
+                self.hybrid.metadata_video_ranks(text_vector)
+                if self.hybrid_config.metadata_weight > 0.0 else {}
             )
+            if not object_ids and not metadata_ranks and ocr_ids:
+                score_by_id = dict(zip(ranked_ids, ranked_scores))
+                ranked_ids = protect_signal_ids(ranked_ids, ocr_ids)
+                ranked_scores = np.asarray(
+                    [score_by_id.get(global_id, 0.0) for global_id in ranked_ids],
+                    dtype=np.float32,
+                )
+            else:
+                ranked_ids, ranked_scores = reciprocal_rank_fusion(
+                    ranked_ids, object_ids, video_by_id,
+                    metadata_ranks, self.hybrid_config,
+                    ocr_ids=ocr_ids,
+                )
             top_labels = [label for label, _ in matched_labels[:5]]
             ocr_ranks = {
                 global_id: rank for rank, global_id in enumerate(ocr_ids, start=1)
@@ -147,24 +166,31 @@ class MultilingualFaissEngine:
         else:
             metadata = load_metadata(self.metadata_path, ranked_ids)
             ocr_ranks = {}
+        use_image_rerank = (
+            self.reranker is not None
+            and quality
+            and self.siglip2_index is None
+        )
         selection_size = (
             max(top_k, self.reranker.config.pool_size)
-            if self.reranker and quality else top_k
+            if use_image_rerank else top_k
         )
         selected = select_candidates(
             ranked_ids, ranked_scores, metadata, selection_size, per_video, min_time_gap,
             video_pool_limit=(max(1, selection_size // per_video)
-                              if self.reranker and quality else None),
+                              if use_image_rerank else None),
         )
         for row in selected:
             row["matched_objects"] = top_labels
             row["_ocr_rank"] = ocr_ranks.get(
                 int(row["_global_id"]), len(ocr_ranks) + 1
             )
-        if self.reranker is not None and quality:
+        if use_image_rerank:
             selected = self.reranker.rerank(query, selected)
-            selected = diversify_ranked_rows(selected, top_k, unique_prefix=20,
+            selected = diversify_ranked_rows(selected, top_k, unique_prefix=5,
                                              per_video_limit=per_video)
+            selected = protect_signal_rows(selected)
+        elif quality:
             selected = protect_signal_rows(selected)
         for row in selected:
             row.pop("_global_id", None)

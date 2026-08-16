@@ -70,9 +70,9 @@ def compose_qa_hypothesis_candidates(
     reranked_union: list[dict[str, object]],
     limit: int = 100,
     primary_prefix: int = 3,
-    first_hypothesis_depth: int = 0,
+    hypothesis_depth: int = 10,
 ) -> list[dict[str, object]]:
-    """Protect visual winners and expose one candidate per possible answer."""
+    """Protect visual winners and fairly interleave possible-answer rankings."""
     output: list[dict[str, object]] = []
     seen: set[tuple[str, int]] = set()
 
@@ -87,9 +87,10 @@ def compose_qa_hypothesis_candidates(
     for ranking in hypothesis_rankings:
         if ranking:
             add(ranking[0])
-    if hypothesis_rankings and first_hypothesis_depth > 0:
-        for row in hypothesis_rankings[0][:first_hypothesis_depth]:
-            add(row)
+    for depth in range(1, max(1, hypothesis_depth)):
+        for ranking in hypothesis_rankings:
+            if depth < len(ranking):
+                add(ranking[depth])
     for ranking in (reranked_union, primary, *hypothesis_rankings):
         for row in ranking:
             add(row)
