@@ -73,7 +73,7 @@ class AssistantService:
                         per_video=max(8, int(options.get("per_video", 3)) * 8),
                     ))
                     verify = bool(options.get(
-                        "trake_verify", self.engine.device == "cuda"
+                        "trake_verify", torch.cuda.is_available()
                     ))
                     if verify:
                         results = self._verify_trake_locked(
@@ -136,7 +136,10 @@ class AssistantService:
         reranker = getattr(self.engine, "reranker", None)
         spec = ((reranker.model_name, reranker.config, reranker.keyframes)
                 if reranker is not None else None)
-        device = self.engine.device
+        # Retrieval may intentionally run on CPU while the 4-bit Qwen verifier
+        # uses the small GPU.  Tying both to engine.device silently disabled
+        # action verification in that common low-VRAM configuration.
+        device = "cuda" if torch.cuda.is_available() else self.engine.device
         self.engine.model, self.engine.reranker = None, None
         del reranker
         self._clear_gpu()

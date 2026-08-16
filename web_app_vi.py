@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 import faiss
 import numpy as np
+import torch
 from flask import Flask, Response, jsonify, render_template, request, send_file
 from sentence_transformers import SentenceTransformer
 from hybrid_search import HybridConfig, HybridSignals, reciprocal_rank_fusion
@@ -399,7 +400,8 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
             vlm_candidates=int(payload.get("vlm_candidates", 6)),
             qa_candidates=int(payload.get("qa_candidates", 10)),
             trake_verify=bool(payload.get(
-                "trake_verify", getattr(search_engine, "device", "cpu") == "cuda"
+                "trake_verify",
+                bool(payload.get("quality", True)) and torch.cuda.is_available(),
             )),
             trake_candidates=int(payload.get("trake_candidates", 8)),
         ))
