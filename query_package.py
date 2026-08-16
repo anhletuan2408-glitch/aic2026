@@ -10,6 +10,7 @@ from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 
 from submission import MAX_ANSWERS, validate_video_id
 from text_encoding import repair_utf8_mojibake
+from review_queue import assess_results
 from trake_search import split_events
 
 
@@ -57,6 +58,10 @@ class QueryPackage:
                         "text": text,
                         "completed": False,
                         "rows": 0,
+                        "confidence": 0.0,
+                        "review_required": True,
+                        "review_status": "waiting",
+                        "review_reason": "Not processed",
                     }
         except (BadZipFile, UnicodeDecodeError) as error:
             raise ValueError("Invalid ZIP or non-UTF-8 query file") from error
@@ -81,6 +86,8 @@ class QueryPackage:
             if query["task"] != task:
                 query["task"] = task
                 query["completed"], query["rows"] = False, 0
+                query.update(confidence=0.0, review_required=True,
+                             review_status="waiting", review_reason="Not processed")
                 self.outputs.pop(name, None)
                 if self.workspace is not None:
                     output = self.workspace / str(query["output_name"])
@@ -88,7 +95,8 @@ class QueryPackage:
                         output.unlink()
                 self._persist()
             return dict(query)
-    def save(self, name: str, rows: list[dict[str, object]]) -> dict[str, object]:
+    def save(self, name: str, rows: list[dict[str, object]],
+             human_reviewed: bool = False) -> dict[str, object]:
         with self.lock:
             if name not in self.queries:
                 raise ValueError(f"Unknown imported query: {name}")
@@ -97,8 +105,35 @@ class QueryPackage:
             self.outputs[name] = content
             query["completed"] = True
             query["rows"] = len(rows)
+            decision = assess_results(str(query["task"]), rows)
+            query["confidence"] = decision.confidence
+            query["review_required"] = decision.required
+            query["review_reason"] = decision.reason
+            query["review_status"] = (
+                "reviewed" if human_reviewed
+                else ("needs_review" if decision.required else "auto_accepted")
+            )
             if self.workspace is not None:
                 (self.workspace / str(query["output_name"])).write_bytes(content)
+            self._persist()
+            return dict(query)
+
+    def review_queue(self) -> list[dict[str, object]]:
+        return sorted(
+            (dict(query) for query in self.queries.values()
+             if query.get("review_status") == "needs_review"),
+            key=lambda query: (float(query.get("confidence", 0.0)), str(query["name"])),
+        )
+
+    def mark_reviewed(self, name: str) -> dict[str, object]:
+        with self.lock:
+            if name not in self.queries:
+                raise ValueError(f"Unknown imported query: {name}")
+            query = self.queries[name]
+            if not bool(query.get("completed")):
+                raise ValueError("Run and save the query before reviewing it")
+            query["review_status"] = "reviewed"
+            query["review_required"] = False
             self._persist()
             return dict(query)
 
@@ -178,6 +213,14 @@ class QueryPackage:
         try:
             values = json.loads(manifest.read_text(encoding="utf-8"))
             self.queries = {str(item["name"]): item for item in values}
+            for query in self.queries.values():
+                query.setdefault("confidence", 0.0)
+                query.setdefault("review_required", not bool(query.get("completed")))
+                query.setdefault(
+                    "review_status",
+                    "needs_review" if query.get("completed") else "waiting",
+                )
+                query.setdefault("review_reason", "Legacy saved result")
             for name, query in self.queries.items():
                 path = self.workspace / str(query["output_name"])
                 if bool(query.get("completed")) and path.is_file():

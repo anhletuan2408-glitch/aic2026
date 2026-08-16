@@ -78,6 +78,7 @@ class AssistantService:
         answers = rank_qa_answers(
             submission_rows,
             [(int(row.pop("_source_index")), str(row["answer"])) for row in predicted],
+            question=question,
         )
         keyframes = {
             (str(row["video_id"]), int(row["frame_idx"])): int(row["keyframe_no"])

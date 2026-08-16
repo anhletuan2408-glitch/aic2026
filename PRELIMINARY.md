@@ -91,7 +91,7 @@ QA:    <video_id>,<frame_idx>,<answer>
 TRAKE: <video_id>,<frame_idx_1>,...,<frame_idx_N>
 ```
 
-The UI imports a ZIP of UTF-8 `.txt` queries, lets the user choose/correct each task type, saves ranked results, and exports `submission.zip` with `submission/<query-name>.csv`.
+The UI imports a ZIP of UTF-8 `.txt` queries, lets the user choose/correct each task type, and can run every unfinished query automatically. Saved auto results are scored for uncertainty: KIS uses retrieval margin/video support, QA uses cross-frame answer consensus, and TRAKE uses video/path agreement. Only low-confidence queries are placed in a risk-sorted human review queue. Human review is therefore the final correction layer, not a prerequisite for automatic inference. The UI exports `submission.zip` with `submission/<query-name>.csv`.
 
 The scorer averages the best R-Score at ranks 1, 5, 20, 50, and 100. Therefore the pipeline explicitly protects rank 1 and rank 5 instead of maximizing recall alone.
 

@@ -107,6 +107,22 @@ class QueryPackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Incomplete queries"):
             self.package.export_zip()
 
+    def test_auto_result_enters_review_queue_and_human_save_clears_it(self) -> None:
+        self.package.import_zip(package_zip({"query-1-kis.txt": "red car"}))
+        rows = [
+            {"video_id": "L21_V001", "frame_idx": 100, "score": 0.10},
+            {"video_id": "L22_V001", "frame_idx": 200, "score": 0.099},
+        ]
+        saved = self.package.save("query-1-kis.txt", rows)
+        self.assertEqual(saved["review_status"], "needs_review")
+        self.assertEqual(len(self.package.review_queue()), 1)
+        reviewed = self.package.save(
+            "query-1-kis.txt", rows, human_reviewed=True
+        )
+        self.assertEqual(reviewed["review_status"], "reviewed")
+        self.assertEqual(self.package.review_queue(), [])
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -197,6 +197,27 @@ class WebAppVietnameseTests(unittest.TestCase):
         with ZipFile(io.BytesIO(response.data)) as archive:
             self.assertEqual(archive.namelist(),["submission/query-1-kis.csv"])
             self.assertEqual(archive.read(archive.namelist()[0]),b"L21_V001,345\r\n")
+    def test_package_auto_run_finishes_before_human_review(self):
+        source = io.BytesIO()
+        with ZipFile(source, "w") as archive:
+            archive.writestr("query-1-kis.txt", "red car")
+        self.client.post("/api/package/import", data={
+            "package": (io.BytesIO(source.getvalue()), "round1.zip")
+        }, content_type="multipart/form-data")
+        started = self.client.post("/api/package/auto-run", json={})
+        self.assertEqual(started.status_code, 202)
+        for _ in range(100):
+            data = self.client.get("/api/package/auto-status").get_json()
+            if not data["auto"]["running"]:
+                break
+            threading.Event().wait(0.01)
+        self.assertFalse(data["auto"]["running"])
+        self.assertTrue(data["queries"][0]["completed"])
+        self.assertIn(
+            data["queries"][0]["review_status"],
+            {"needs_review", "auto_accepted"},
+        )
+
     def test_empty_query_and_keyframe(self):
         self.assertEqual(self.client.post("/api/search",json={"query":" "}).status_code,400)
         response=self.client.get("/keyframe/L21_V001/12.jpg")

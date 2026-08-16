@@ -258,6 +258,38 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
         if engine is None else QueryPackage()
     )
     gt_store = ground_truth or GroundTruthStore(Path("ground_truth/local.jsonl"))
+    auto_lock = threading.Lock()
+    auto_state: dict[str, object] = {
+        "running": False, "completed": 0, "total": 0,
+        "current": None, "errors": {},
+    }
+
+    def auto_snapshot() -> dict[str, object]:
+        with auto_lock:
+            return dict(auto_state)
+
+    def run_package_automatically(names: list[str]) -> None:
+        errors: dict[str, str] = {}
+        for name in names:
+            with auto_lock:
+                auto_state["current"] = name
+            try:
+                query = next(item for item in package.status() if item["name"] == name)
+                result = assistant.run(
+                    str(query["task"]), str(query["text"]), top_k=100,
+                    candidate_k=10000, per_video=5, min_time_gap=1.5,
+                    quality=getattr(search_engine, "reranker", None) is not None,
+                    qa_candidates=10,
+                )
+                package.save(name, list(result["results"]), human_reviewed=False)
+            except Exception as error:
+                errors[name] = str(error)
+            finally:
+                with auto_lock:
+                    auto_state["completed"] = int(auto_state["completed"]) + 1
+                    auto_state["errors"] = dict(errors)
+        with auto_lock:
+            auto_state.update(running=False, current=None, errors=dict(errors))
 
 
     @app.errorhandler(ValueError)
@@ -372,6 +404,8 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
         return jsonify({"record": record, "count": len(gt_store.records())})
     @app.post("/api/package/import")
     def api_package_import() -> Response:
+        if bool(auto_snapshot()["running"]):
+            raise ValueError("Wait for the automatic package run to finish before importing")
         uploaded = request.files.get("package")
         if uploaded is None:
             raise ValueError("Missing package ZIP")
@@ -383,6 +417,8 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
 
     @app.post("/api/package/type")
     def api_package_type() -> Response:
+        if bool(auto_snapshot()["running"]):
+            raise ValueError("Wait for the automatic package run to finish before changing task types")
         payload = request.get_json(force=True)
         changed = package.set_task(
             str(payload.get("query_name", "")), str(payload.get("task", ""))
@@ -394,8 +430,48 @@ def create_app(index_dir: Path | None = None, zip_dir: Path | None = None,
         rows = payload.get("results", [])
         if not isinstance(rows, list):
             raise ValueError("results must be a list")
-        saved = package.save(str(payload.get("query_name", "")), rows)
+        saved = package.save(
+            str(payload.get("query_name", "")), rows,
+            human_reviewed=bool(payload.get("human_reviewed", False)),
+        )
         return jsonify({"query": saved, "queries": package.status()})
+
+    @app.get("/api/package/review")
+    def api_package_review_queue() -> Response:
+        return jsonify({"queries": package.review_queue()})
+
+    @app.post("/api/package/review")
+    def api_package_review_done() -> Response:
+        payload = request.get_json(force=True)
+        reviewed = package.mark_reviewed(str(payload.get("query_name", "")))
+        return jsonify({"query": reviewed, "queries": package.status()})
+
+    @app.get("/api/package/auto-status")
+    def api_package_auto_status() -> Response:
+        return jsonify({"auto": auto_snapshot(), "queries": package.status()})
+
+    @app.post("/api/package/auto-run")
+    def api_package_auto_run() -> Response:
+        payload = request.get_json(silent=True) or {}
+        rerun = bool(payload.get("rerun", False))
+        names = [
+            str(item["name"]) for item in package.status()
+            if rerun or not bool(item.get("completed"))
+        ]
+        if not names:
+            raise ValueError("All imported queries already have results")
+        with auto_lock:
+            if bool(auto_state["running"]):
+                raise ValueError("Automatic package run is already active")
+            auto_state.update(
+                running=True, completed=0, total=len(names),
+                current=None, errors={},
+            )
+        threading.Thread(
+            target=run_package_automatically, args=(names,), daemon=True,
+            name="aic-package-auto",
+        ).start()
+        return jsonify({"auto": auto_snapshot()}), 202
 
     @app.get("/api/package/export")
     def api_package_export() -> Response:

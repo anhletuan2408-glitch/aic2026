@@ -25,7 +25,15 @@ Use KIS for short keywords or long Vietnamese descriptions. For QA, select a ret
 
 ### Imported data
 
-Import a ZIP containing root-level UTF-8 `.txt` query files. Choose or correct the type (`KIS`, `QA`, or `TRAKE`) for each query, run it, save the selected ranked rows, then export a validated `submission.zip`.
+Import a ZIP containing root-level UTF-8 `.txt` query files and correct the type (`KIS`, `QA`, or `TRAKE`) before starting. Press **Chạy tự động toàn bộ** to process every unfinished query sequentially and save up to 100 ranked rows per query.
+
+Automatic results receive a task-specific confidence score. KIS uses the Top-1 margin and video support, QA uses answer consensus across distinct candidate frames, and TRAKE uses target-video/path consistency. Only low-confidence queries enter **Duyệt câu thiếu chắc chắn**, ordered from riskiest to safest. Running and saving a reviewed query marks it as human-verified; high-confidence queries remain auto-accepted. Export is allowed after every query has a valid result.
+
+Suggested three-hour operating window:
+
+1. Before 18:30: import data, verify task types, and start the automatic run.
+2. 18:30-21:15: open the review queue and inspect Top-1/Top-5, QA answer, or temporal path only for flagged queries.
+3. 21:15-21:30: ensure there are no automatic errors, export `submission.zip`, and inspect filenames/row counts.
 
 The exported files have no header and use organizer frame IDs:
 

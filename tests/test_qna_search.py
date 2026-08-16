@@ -10,7 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 from qna_search import (
-    clean_answer, compose_qa_hypothesis_candidates, context_images,
+    answer_aliases, clean_answer, compose_qa_hypothesis_candidates, context_images,
     expand_qa_context_rows,
     fuse_qa_candidate_rows,
     rank_qa_answers,
@@ -18,6 +18,19 @@ from qna_search import (
 
 
 class QnaSearchTests(unittest.TestCase):
+    def test_answer_aliases_strip_name_year_and_expand_count(self) -> None:
+        self.assertEqual(
+            answer_aliases("Tên ứng viên nào?", "TRUMP 2024"),
+            ["TRUMP", "TRUMP 2024"],
+        )
+        count = answer_aliases("Có bao nhiêu người?", "Năm người")
+        self.assertEqual(count[0], "Năm người")
+        self.assertIn("5", count)
+        self.assertIn("five people", count)
+        ten = answer_aliases("Có bao nhiêu người?", "10")
+        self.assertIn("ten people", ten)
+        self.assertNotIn("one person", ten)
+
     def test_context_images_adds_selected_region_after_full_frame(self) -> None:
         source = Image.new("RGB", (100, 80), "red")
         payload = io.BytesIO()

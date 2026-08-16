@@ -26,6 +26,22 @@ else:
 
 QWEN_VL_MODEL = "Qwen/Qwen2.5-VL-3B-Instruct"
 
+_COUNT_ALIASES = {
+    "0": ("0", "không người", "zero people"), "1": ("1", "một người", "one person"),
+    "2": ("2", "hai người", "two people"), "3": ("3", "ba người", "three people"),
+    "4": ("4", "bốn người", "four people"), "5": ("5", "năm người", "five people"),
+    "6": ("6", "sáu người", "six people"), "7": ("7", "bảy người", "seven people"),
+    "8": ("8", "tám người", "eight people"), "9": ("9", "chín người", "nine people"),
+    "10": ("10", "mười người", "ten people"),
+}
+_COLOR_ALIASES = {
+    "đỏ": ("đỏ", "màu đỏ", "red"), "xanh dương": ("xanh dương", "màu xanh dương", "blue"),
+    "xanh lá": ("xanh lá", "màu xanh lá", "green"), "vàng": ("vàng", "màu vàng", "yellow"),
+    "đen": ("đen", "màu đen", "black"), "trắng": ("trắng", "màu trắng", "white"),
+    "hồng": ("hồng", "màu hồng", "pink"), "cam": ("cam", "màu cam", "orange"),
+    "tím": ("tím", "màu tím", "purple"),
+}
+
 
 def clean_answer(value: str) -> str:
     value = repair_utf8_mojibake(value).strip().splitlines()[0].strip()
@@ -36,6 +52,34 @@ def clean_answer(value: str) -> str:
     if not value:
         raise ValueError("VLM returned an empty answer")
     return value[:100]
+
+
+def answer_aliases(question: str, value: str) -> list[str]:
+    """Return conservative exact-match aliases without changing visual meaning."""
+    answer = clean_answer(value)
+    aliases = [answer]
+    folded_question, folded_answer = question.casefold(), answer.casefold()
+    if re.search(r"\btên\b|\bứng viên\b|\bwho\b|\bname\b", folded_question):
+        shortened = re.sub(r"(?:\s*[-–|:]?\s*)\b(?:19|20)\d{2}\b.*$", "", answer).strip()
+        if shortened and shortened.casefold() != folded_answer:
+            aliases.insert(0, shortened)
+    if re.search(r"\bbao nhiêu\b|\bhow many\b", folded_question):
+        for digit, variants in _COUNT_ALIASES.items():
+            if any(re.search(r"\b" + re.escape(item.casefold()) + r"\b", folded_answer) for item in variants):
+                aliases.extend((*variants, digit))
+                break
+    if re.search(r"\bmàu\b|\bcolor\b", folded_question):
+        for variants in _COLOR_ALIASES.values():
+            if any(re.search(r"\b" + re.escape(item.casefold()) + r"\b", folded_answer) for item in variants):
+                aliases.extend(variants)
+                break
+    output, seen = [], set()
+    for alias in aliases:
+        cleaned = clean_answer(alias)
+        if cleaned.casefold() not in seen:
+            seen.add(cleaned.casefold())
+            output.append(cleaned)
+    return output
 
 
 def fuse_qa_candidate_rows(
@@ -152,6 +196,7 @@ def rank_qa_answers(
     rows: list[dict[str, object]],
     predictions: list[tuple[int, str]],
     max_answers: int = 100,
+    question: str = "",
 ) -> list[QAAnswer]:
     cleaned = [(index, clean_answer(answer)) for index, answer in predictions]
     frequencies = Counter(answer for _, answer in cleaned)
@@ -170,8 +215,12 @@ def rank_qa_answers(
             ranked.append(QAAnswer(*key))
 
     for index, answer in cleaned:
-        add(rows[index], answer)
-    answer_by_source = {index + 1: answer for index, answer in cleaned}
+        for alias in answer_aliases(question, answer):
+            add(rows[index], alias)
+    answer_by_source = {
+        index + 1: answer_aliases(question, answer)[0]
+        for index, answer in cleaned
+    }
     for row in rows:
         source_rank = int(row.get("context_of_rank", 0))
         if source_rank in answer_by_source:
@@ -292,7 +341,7 @@ def search_qna(
                 image.close()
     if not predictions:
         raise RuntimeError("VLM produced no Q&A predictions")
-    return rank_qa_answers(rows, predictions)
+    return rank_qa_answers(rows, predictions, question=question)
 
 
 def unload_retrieval_engine(engine: MultilingualFaissEngine) -> None:
@@ -325,7 +374,7 @@ def answer_rows(
                 image.close()
     if not predictions:
         raise RuntimeError("Qwen-VL produced no Q&A predictions")
-    return rank_qa_answers(rows, predictions)
+    return rank_qa_answers(rows, predictions, question=question)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Retrieve frames and answer visual questions")
