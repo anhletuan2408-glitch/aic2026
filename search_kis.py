@@ -58,6 +58,7 @@ def select_candidates(
     per_video_limit: int,
     min_time_gap: float,
     video_pool_limit: int | None = None,
+    diverse_prefix: int = 20,
 ) -> list[dict[str, object]]:
     if min_time_gap < 0:
         raise ValueError("min_time_gap must be non-negative")
@@ -96,14 +97,46 @@ def select_candidates(
     if video_pool_limit is not None:
         video_order = video_order[:video_pool_limit]
     selected: list[dict[str, object]] = []
+    selected_keys: set[tuple[str, int]] = set()
+    prefix_size = min(max(diverse_prefix, 0), top_k)
     for round_index in range(per_video_limit):
         for video_id in video_order:
             candidates = grouped[video_id]
             if round_index >= len(candidates):
                 continue
-            selected.append({"rank": len(selected) + 1, **candidates[round_index]})
-            if len(selected) >= top_k:
-                return selected
+            row = candidates[round_index]
+            selected.append({"rank": len(selected) + 1, **row})
+            selected_keys.add((video_id, int(row["frame_idx"])))
+            if len(selected) >= prefix_size:
+                break
+        if len(selected) >= prefix_size:
+            break
+
+    if len(selected) >= top_k:
+        return selected
+
+    for retrieval_rank, (global_id, score) in enumerate(
+        zip(ranked_ids, scores), start=1
+    ):
+        row = metadata[global_id]
+        video_id = str(row["video_id"])
+        key = (video_id, int(row["frame_idx"]))
+        if key in selected_keys:
+            continue
+        selected.append({
+            "rank": len(selected) + 1,
+            "_global_id": global_id,
+            "retrieval_rank": retrieval_rank,
+            "video_id": video_id,
+            "keyframe_no": int(row["keyframe_no"]),
+            "frame_idx": int(row["frame_idx"]),
+            "pts_time": float(row["pts_time"]),
+            "score": float(score),
+            "title": str(row["title"]),
+        })
+        selected_keys.add(key)
+        if len(selected) >= top_k:
+            return selected
     return selected
 
 def protect_signal_rows(
@@ -164,7 +197,7 @@ def diversify_ranked_rows(
     for row in rows:
         video_id = str(row["video_id"])
         key = (video_id, int(row["frame_idx"]))
-        if key in seen_rows or counts.get(video_id, 0) >= per_video_limit:
+        if key in seen_rows:
             continue
         chosen.append(row)
         seen_rows.add(key)

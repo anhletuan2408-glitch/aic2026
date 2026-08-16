@@ -68,6 +68,36 @@ class CandidateSelectionTests(unittest.TestCase):
              ("L21_V001",20),("L21_V002",50)],
         )
         self.assertEqual([row["rank"] for row in selected], [1,2,3,4,5])
+    def test_selection_backfills_same_video_after_diverse_prefix(self) -> None:
+        metadata = {
+            index: {
+                "video_id": "L21_V001",
+                "keyframe_no": index,
+                "frame_idx": index * 30,
+                "pts_time": float(index),
+                "title": "A",
+            }
+            for index in range(1, 7)
+        }
+        selected = select_candidates(
+            list(metadata), np.linspace(.9, .4, 6, dtype=np.float32), metadata,
+            top_k=6, per_video_limit=3, min_time_gap=2.0, diverse_prefix=2,
+        )
+        self.assertEqual(len(selected), 6)
+        self.assertEqual(
+            {row["frame_idx"] for row in selected},
+            {30, 60, 90, 120, 150, 180},
+        )
+
+    def test_rerank_diversity_limit_is_soft_after_prefix(self) -> None:
+        rows = [
+            {"video_id": "L21_V001", "frame_idx": frame, "score": 1.0}
+            for frame in range(6)
+        ]
+        selected = diversify_ranked_rows(
+            rows, top_k=6, unique_prefix=1, per_video_limit=3
+        )
+        self.assertEqual([row["frame_idx"] for row in selected], list(range(6)))
     def test_protects_bounded_ocr_prefix_after_visual_winner(self) -> None:
         rows = [
             {"video_id":"V1","frame_idx":1,"score":.99},
